@@ -1,0 +1,8 @@
+{
+  "recommendations": [
+    "maptz.regionfolder",
+    "rust-lang.rust-analyzer",
+    "EditorConfig.EditorConfig",
+    "nefrob.vscode-just-syntax"
+  ]
+}

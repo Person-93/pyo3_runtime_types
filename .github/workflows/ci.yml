@@ -1,0 +1,155 @@
+name: CI
+
+on:
+  push:
+    branches:
+    - master
+    paths:
+    - '**'
+    - "!/*.md"
+    - "!/docs/**"
+    - "!/LICENSE-*.txt"
+
+  pull_request:
+    paths:
+    - '**'
+    - "!/*.md"
+    - "!/docs/**"
+    - "!/LICENSE-*.txt"
+
+  workflow_dispatch:
+
+jobs:
+  ci:
+    name: CI
+    needs: [smoke, test, docs, rustfmt, clippy]
+    runs-on: ubuntu-latest
+    steps:
+    - name: Done
+      run: exit 0
+
+  test:
+    needs: smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        rust: [stable, beta, nightly]
+
+    runs-on: ${{ matrix.os }}
+
+    continue-on-error: ${{ matrix.rust != 'stable' }}
+
+    steps:
+    - uses: actions/checkout@v2
+
+    - uses: actions-rs/toolchain@v1
+      id: toolchain
+      with:
+        profile: minimal
+        toolchain: ${{ matrix.rust }}
+        override: true
+
+    - uses: Swatinem/rust-cache@v1.3.0
+
+    - uses: actions-rs/cargo@v1
+      with:
+        command: install
+        args: cargo-feature-matrix
+
+    - uses: actions-rs/cargo@v1
+      with:
+        command: feature-matrix
+        args: test
+
+  docs:
+    name: Docs
+    needs: smoke
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
+        override: true
+
+    - uses: Swatinem/rust-cache@v1.3.0
+
+    - name: Check Documentation
+      env:
+        RUSTDOCFLAGS: -D warnings
+      uses: actions-rs/cargo@v1
+      with:
+        command: doc
+        args: --no-deps --document-private-items --workspace
+
+  rustfmt:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
+        override: true
+        components: rustfmt
+
+    - uses: Swatinem/rust-cache@v1.3.0
+
+    - name: Check Formatting
+      uses: actions-rs/cargo@v1
+      with:
+        command: fmt
+        args: --all -- --check
+
+  clippy:
+    needs: smoke
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v1
+
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        components: clippy
+        override: true
+
+    - uses: actions-rs/clippy-check@v1
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+        args: --workspace --all-features --all-targets -- -D warnings
+
+  smoke:
+    name: Quick Check
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v2
+
+    - uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        profile: minimal
+        override: true
+
+    - uses: Swatinem/rust-cache@v1.3.0
+
+    - name: Default Features
+      uses: actions-rs/cargo@v1
+      with:
+        command: check
+        args: --workspace --all-targets
+
+    - name: All Features
+      uses: actions-rs/cargo@v1
+      with:
+        command: check
+        args: --workspace --all-targets --all-features
+
+    - name: No Default Features
+      uses: actions-rs/cargo@v1
+      with:
+        command: check
+        args: --workspace --all-targets --no-default-features

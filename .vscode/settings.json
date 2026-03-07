@@ -1,0 +1,5 @@
+{
+  "rust-analyzer.check.command": "clippy",
+  "rust-analyzer.imports.preferPrelude": true,
+  "rust-analyzer.imports.granularity.group": "module"
+}
