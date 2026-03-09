@@ -35,16 +35,22 @@ impl<'py, 'n, T> Builder<'py, 'n, T> {
     }
   }
 
-  pub fn bases(&mut self, bases: impl IntoIterator<Item = Bound<'py, PyType>>) {
+  pub fn bases(
+    &mut self,
+    bases: impl IntoIterator<Item = Bound<'py, PyType>>,
+  ) -> &mut Self {
     self.bases.extend(bases);
+    self
   }
 
-  pub fn module(&mut self, module: Bound<'py, PyModule>) {
+  pub fn module(&mut self, module: Bound<'py, PyModule>) -> &mut Self {
     self.module = Some(module);
+    self
   }
 
-  pub fn init_fn(&mut self, init_fn: InitFn<T>) {
+  pub fn init_fn(&mut self, init_fn: InitFn<T>) -> &mut Self {
     self.init_fn = Some(init_fn);
+    self
   }
 
   pub fn build(&self, py: Python<'py>) -> PyResult<Bound<'py, PyType>> {
