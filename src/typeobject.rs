@@ -7,8 +7,8 @@ use std::{mem, ptr};
 use pyo3::exceptions::PyTypeError;
 use pyo3::ffi::{
   Py_TPFLAGS_DEFAULT, Py_TPFLAGS_DISALLOW_INSTANTIATION,
-  Py_TPFLAGS_TYPE_SUBCLASS, PyObject_HEAD_INIT, PyType_FromMetaclass,
-  PyType_Ready, PyType_Spec, PyTypeObject, PyVarObject,
+  Py_TPFLAGS_TYPE_SUBCLASS, PyObject, PyObject_HEAD_INIT, PyType_FromMetaclass,
+  PyType_Ready, PyType_Spec, PyTypeObject, PyVarObject, destructor,
 };
 use pyo3::prelude::*;
 use pyo3::type_object::PyTypeInfo;
@@ -16,16 +16,12 @@ use pyo3::types::{PyString, PyType};
 
 use crate::{InitFn, NewFn};
 
-#[derive(Clone, Copy)]
 pub(crate) struct RuntimeTypeObject {
-  new_fn: NonNull<()>,
-  init_fn: Option<NonNull<()>>,
+  new_fn: [*mut (); 2],
+  new_fn_drop: *mut (),
+  init_fn: [*mut (); 2],
+  init_fn_drop: *mut (),
 }
-
-const _: () = assert!(
-  !mem::needs_drop::<RuntimeTypeObject>(),
-  "RuntimeTypeObject's Drop will never be called"
-);
 
 // SAFETY: `type_object_raw` always returns the same pointer
 unsafe impl PyTypeInfo for RuntimeTypeObject {
@@ -37,24 +33,24 @@ unsafe impl PyTypeInfo for RuntimeTypeObject {
   }
 }
 
-impl<'a, 'py> FromPyObject<'a, 'py> for RuntimeTypeObject {
+impl<'a, 'py> FromPyObject<'a, 'py> for &'a RuntimeTypeObject {
   type Error = PyErr;
 
   fn extract(obj: Borrowed<'a, 'py, PyAny>) -> Result<Self, Self::Error> {
-    if obj.is_instance_of::<Self>() {
+    if obj.is_instance_of::<RuntimeTypeObject>() {
       let with_base = obj.as_ptr().cast::<RuntimeTypeWithBase>();
       // SAFETY: we just checked if it's the right type
-      unsafe { Ok(*ptr::addr_of!((*with_base).runtime_type)) }
+      unsafe { Ok(&*ptr::addr_of!((*with_base).runtime_type)) }
     } else {
       Err(PyTypeError::new_err(format!(
         "expected type to be an instance of {} metaclass",
-        Self::type_object(obj.py())
+        RuntimeTypeObject::type_object(obj.py())
           .name()
           .unwrap_or_else(|_| PyString::new(
             obj.py(),
             #[expect(deprecated, reason = "used as fallback")]
             {
-              Self::NAME
+              RuntimeTypeObject::NAME
             }
           )),
       )))
@@ -62,11 +58,39 @@ impl<'a, 'py> FromPyObject<'a, 'py> for RuntimeTypeObject {
   }
 }
 
+impl Drop for RuntimeTypeObject {
+  fn drop(&mut self) {
+    // SAFETY: all of these pointers are set in the constructor
+    unsafe {
+      let new_fn_drop = *(self.new_fn_drop as *const fn([*mut (); 2]));
+      new_fn_drop(self.new_fn);
+
+      let init_fn_drop = *(self.init_fn_drop as *const fn([*mut (); 2]));
+      init_fn_drop(self.init_fn);
+    }
+  }
+}
+
 impl RuntimeTypeObject {
   pub(crate) fn new<T>(new_fn: NewFn<T>, init_fn: Option<InitFn<T>>) -> Self {
-    Self {
-      new_fn: NonNull::new(new_fn as *mut ()).unwrap(),
-      init_fn: init_fn.map(|f| NonNull::new(f as *mut ()).unwrap()),
+    fn new_fn_drop<T>(new_fn: [*mut (); 2]) {
+      // SAFETY: undoing transmute below
+      let _ = unsafe { mem::transmute::<[*mut (); 2], NewFn<T>>(new_fn) };
+    }
+    fn init_fn_drop<T>(init_fn: [*mut (); 2]) {
+      // SAFETY: undoing transmute below
+      let _ =
+        unsafe { mem::transmute::<[*mut (); 2], Option<InitFn<T>>>(init_fn) };
+    }
+
+    // SAFETY: these function pointers will only be accessed from the getter functions
+    unsafe {
+      Self {
+        new_fn: mem::transmute::<NewFn<T>, [*mut (); 2]>(new_fn),
+        new_fn_drop: new_fn_drop::<T> as *mut (),
+        init_fn: mem::transmute::<Option<InitFn<T>>, [*mut (); 2]>(init_fn),
+        init_fn_drop: init_fn_drop::<T> as *mut (),
+      }
     }
   }
 
@@ -127,9 +151,7 @@ impl RuntimeTypeObject {
   /// `self` must have been constructed as `T`
   pub(crate) unsafe fn init_fn<T>(&self) -> Option<InitFn<T>> {
     // SAFETY: init_fn is set in `new` and caller ensures that `T` is correct
-    self
-      .init_fn
-      .map(|init_fn| unsafe { mem::transmute(init_fn) })
+    unsafe { mem::transmute(self.init_fn) }
   }
 }
 
@@ -151,12 +173,25 @@ impl RuntimeTypeWithBase {
       ptr::addr_of_mut!((*slf).runtime_type).write(runtime_type);
     }
   }
+
+  /// # Safety
+  /// `slf` must be a pointer to a [`RuntimeTypeWithBase`]
+  unsafe extern "C" fn destroy(slf: *mut PyObject) {
+    // SAFETY: caller upholds requirements
+    unsafe {
+      let slf = slf.cast::<Self>();
+      let p = ptr::addr_of_mut!((*slf).runtime_type);
+      ptr::drop_in_place(p);
+    }
+  }
 }
 
 static mut RUNTIME_TYPE_TYPE: PyTypeObject = PyTypeObject {
   tp_name: c"pyo3_runtime_type".as_ptr(),
   tp_base: &raw mut pyo3::ffi::PyType_Type,
+  tp_finalize: Some(RuntimeTypeWithBase::destroy as destructor),
   tp_basicsize: mem::size_of::<RuntimeTypeWithBase>() as pyo3::ffi::Py_ssize_t,
+  tp_itemsize: 1,
   #[cfg(not(Py_GIL_DISABLED))]
   tp_flags: runtime_type_flags() as _,
   #[cfg(Py_GIL_DISABLED)]

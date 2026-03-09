@@ -29,7 +29,7 @@ pub(crate) unsafe extern "C" fn new<T>(
   let kwargs: Option<Bound<'_, PyDict>> = unsafe {
     Bound::from_borrowed_ptr_or_opt(py, kwargs).map(|b| b.cast_into_unchecked())
   };
-  let rtt: RuntimeTypeObject = match ty.extract() {
+  let rtt: &RuntimeTypeObject = match ty.extract() {
     Ok(rtt) => rtt,
     Err(err) => {
       err.restore(py);
@@ -94,7 +94,7 @@ pub(crate) unsafe extern "C" fn init<T>(
     args: Bound<'_, PyTuple>,
     kwargs: Option<Bound<'_, PyDict>>,
   ) -> PyResult<()> {
-    let rtt: RuntimeTypeObject = ty.extract()?;
+    let rtt: &RuntimeTypeObject = ty.extract()?;
     // SAFETY: `RuntimeTypeObject::new` stores this fn's ptr with the correct `T`
     let init_fn = unsafe { rtt.init_fn::<T>() }.ok_or_else(|| {
       PySystemError::new_err(format!(

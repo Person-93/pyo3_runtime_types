@@ -55,7 +55,7 @@ impl<'py, 'n, T> Builder<'py, 'n, T> {
     self
   }
 
-  pub fn build(&self, py: Python<'py>) -> PyResult<Bound<'py, PyType>> {
+  pub fn build(self, py: Python<'py>) -> PyResult<Bound<'py, PyType>> {
     let name = match &self.module {
       Some(module) => {
         CString::new(format!("{}.{}", module.name()?.to_str()?, self.name))
@@ -109,15 +109,19 @@ impl<'py, 'n, T> Builder<'py, 'n, T> {
   }
 }
 
-pub type NewFn<T> = for<'py> fn(
-  Bound<'py, PyType>,
-  Bound<'py, PyTuple>,
-  Option<Bound<'py, PyDict>>,
-) -> PyResult<T>;
+pub type NewFn<T> = Box<
+  dyn for<'py> Fn(
+    Bound<'py, PyType>,
+    Bound<'py, PyTuple>,
+    Option<Bound<'py, PyDict>>,
+  ) -> PyResult<T>,
+>;
 
-pub type InitFn<T> = for<'py> fn(
-  &T,
-  ty: Bound<'py, PyType>,
-  args: Bound<'py, PyTuple>,
-  kwargs: Option<Bound<'py, PyDict>>,
-) -> PyResult<()>;
+pub type InitFn<T> = Box<
+  dyn for<'py> Fn(
+    &T,
+    Bound<'py, PyType>,
+    Bound<'py, PyTuple>,
+    Option<Bound<'py, PyDict>>,
+  ) -> PyResult<()>,
+>;
