@@ -27,7 +27,20 @@ pub struct Builder<'py, 'n, T> {
 }
 
 impl<'py, 'n, T> Builder<'py, 'n, T> {
-  pub fn new(name: impl Into<Cow<'n, str>>) -> Self {
+  pub fn new(name: impl Into<Cow<'n, str>>, new_fn: NewFn<T>) -> Self {
+    // SAFETY: new_fn is set right after this call
+    let mut this = unsafe { Builder::new_without_new_fn(name) };
+    this.new_fn(new_fn);
+    this
+  }
+
+  /// # Safety
+  /// Caller must ensure that no type object is used while the type data is not initialized
+  ///
+  /// There are two ways to accomplish this
+  /// - set the new_fn by calling [`Self::new_fn`] before [`Self::build`]
+  /// - manually set the type data for every instance of the new python type
+  pub unsafe fn new_without_new_fn(name: impl Into<Cow<'n, str>>) -> Self {
     Builder {
       flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE),
       module: None,
