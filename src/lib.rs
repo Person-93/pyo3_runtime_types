@@ -13,6 +13,7 @@ use pyo3::types::{PyDict, PyTuple, PyType};
 use self::typeobject::RuntimeTypeObject;
 use self::typespec::TypeSpec;
 
+mod data_ptr;
 mod tp;
 mod typeobject;
 mod typespec;

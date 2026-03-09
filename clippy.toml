@@ -8,6 +8,10 @@ reason = "use safe wrapper instead"
 replacement = "crate::typespec::TypeSpec"
 
 [[disallowed-methods]]
+path = "pyo3::ffi::PyObject_GetTypeData"
+reason = "use safe-ish wrapper instead"
+
+[[disallowed-methods]]
 path = "std::io::stdout"
 reason = "use logging macros instead"
 
