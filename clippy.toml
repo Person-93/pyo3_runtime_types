@@ -6,3 +6,27 @@ excessive-nesting-threshold = 8
 path = "pyo3::ffi::PyType_Spec"
 reason = "use safe wrapper instead"
 replacement = "crate::typespec::TypeSpec"
+
+[[disallowed-methods]]
+path = "std::io::stdout"
+reason = "use logging macros instead"
+
+[[disallowed-methods]]
+path = "std::io::stderr"
+reason = "use logging macros instead"
+
+[[disallowed-macros]]
+path = "std::eprint"
+reason = "use logging macros instead"
+
+[[disallowed-macros]]
+path = "std::eprintln"
+reason = "use logging macros instead"
+
+[[disallowed-macros]]
+path = "std::print"
+reason = "use logging macros instead"
+
+[[disallowed-macros]]
+path = "std::println"
+reason = "use logging macros instead"
