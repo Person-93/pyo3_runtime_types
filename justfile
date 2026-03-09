@@ -2,10 +2,14 @@
 # in version control
 import? 'local.justfile'
 
-venv_path := absolute_path(".venv/bin")
+venv_path := if os() == "windows" {
+  absolute_path(".venv\\Scripts")
+} else {
+  absolute_path(".venv/bin")
+}
 
 export CARGO_TARGET_DIR := "target/just"
-export PATH := venv_path + ":" + env('PATH')
+export PATH := venv_path + separator + env('PATH')
 alias y := why
 
 [private]
@@ -17,7 +21,7 @@ setup:
   pre-commit install --install-hooks -t pre-commit -t commit-msg
 
 # setup the venv if necessary
-@venv python="python3":
+@venv python=default_python:
   [ -d .venv ] || {{python}} -m venv .venv
 
 # delete the venv and force pyo3 to re-configure accordingly
@@ -76,4 +80,9 @@ separator := if os() == "windows" {
   ";"
 } else {
   ":"
+}
+default_python := if os() == "windows" {
+  "python"
+} else {
+  "python3"
 }
