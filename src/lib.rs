@@ -5,9 +5,9 @@ use std::ptr::{self, NonNull};
 
 use pyo3::PyTypeInfo as _;
 use pyo3::ffi::{
-  Py_TPFLAGS_DEFAULT, Py_TPFLAGS_DISALLOW_INSTANTIATION,
-  Py_TPFLAGS_MANAGED_DICT, Py_TPFLAGS_TYPE_SUBCLASS, Py_tp_finalize, Py_tp_new,
-  PyObject, PyObject_GetTypeData, PyObject_HEAD_INIT, PyType_FromMetaclass,
+  Py_TPFLAGS_DEFAULT, Py_TPFLAGS_DISALLOW_INSTANTIATION, Py_TPFLAGS_HEAPTYPE,
+  Py_TPFLAGS_TYPE_SUBCLASS, Py_tp_finalize, Py_tp_new, PyObject,
+  PyObject_GetTypeData, PyObject_HEAD_INIT, PyType_FromMetaclass,
   PyType_GenericNew, PyType_Ready, PyType_Slot, PyType_Spec, PyTypeObject,
   PyVarObject, destructor, newfunc,
 };
@@ -27,9 +27,7 @@ impl<'py, 'n, T> Builder<'py, 'n, T> {
   pub fn new(name: impl Into<Cow<'n, str>>, new_fn: NewFn<T>) -> Self {
     Builder {
       new_fn,
-      flags: (Py_TPFLAGS_DEFAULT
-        | Py_TPFLAGS_TYPE_SUBCLASS
-        | Py_TPFLAGS_MANAGED_DICT),
+      flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE),
       init_fn: None,
       name: name.into(),
       module: None,
