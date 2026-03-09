@@ -41,8 +41,9 @@ pub(crate) unsafe extern "C" fn new<T>(
   // SAFETY: `RuntimeTypeObject::new` stores this fn's ptr with the correct `T`
   let Some(new_fn) = (unsafe { rtt.new_fn::<T>() }) else {
     PyTypeError::new_err(format!(
-      "{} can only be instantiated from native code",
-      ty.name().unwrap_or_else(|_| PyString::new(py, "<unknown>"))
+      "could not get __new__ fn for <{}>: {}",
+      ty.name().unwrap_or_else(|_| PyString::new(py, "<unknown>")),
+      core::any::type_name::<T>()
     ))
     .restore(py);
     return ptr::null_mut();

@@ -63,10 +63,12 @@ impl Drop for RuntimeTypeObject {
   fn drop(&mut self) {
     // SAFETY: all of these pointers are set in the constructor
     unsafe {
-      let new_fn_drop = *(self.new_fn_drop as *const fn([*mut (); 2]));
+      let new_fn_drop =
+        mem::transmute::<*mut (), fn([*mut (); 2])>(self.new_fn_drop);
       new_fn_drop(self.new_fn);
 
-      let init_fn_drop = *(self.init_fn_drop as *const fn([*mut (); 2]));
+      let init_fn_drop =
+        mem::transmute::<*mut (), fn([*mut (); 2])>(self.init_fn_drop);
       init_fn_drop(self.init_fn);
     }
   }
