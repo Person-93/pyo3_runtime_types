@@ -79,14 +79,14 @@ impl<'py, 'n, T> Builder<'py, 'n, T> {
 
     // SAFETY: pointer refers to a valid type object
     unsafe {
-      if PyType_Ready(&raw mut META_CLASS_TYPE) != 0 {
+      if PyType_Ready(&raw mut RUNTIME_TYPE_TYPE) != 0 {
         return Err(PyErr::fetch(py));
       }
     }
     // SAFETY: all the pointers refer to objects in this scope
     let Some(ty) = (unsafe {
       NonNull::new(PyType_FromMetaclass(
-        &raw mut META_CLASS_TYPE,
+        &raw mut RUNTIME_TYPE_TYPE,
         self.module.as_ref().map(Bound::as_ptr).unwrap_or_default(),
         &raw mut spec,
         bases.as_ptr(),
@@ -96,7 +96,7 @@ impl<'py, 'n, T> Builder<'py, 'n, T> {
     };
     // SAFETY: `ty` was just created using `META_CLASS_TYPE`
     unsafe {
-      MetaClass::setup(ty.cast(), self.new_fn, self.init_fn);
+      RuntimeType::setup(ty.cast(), self.new_fn, self.init_fn);
     }
     // SAFETY: python API returns a valid owned reference to a type object
     let ty = unsafe {
@@ -147,20 +147,20 @@ pub type InitFn<T> = for<'py> fn(
 ) -> PyResult<()>;
 
 #[repr(C)]
-struct MetaClass {
+struct RuntimeType {
   _ob_base: PyTypeObject,
   new_fn: NonNull<()>,
   init_fn: Option<NonNull<()>>,
 }
 
 const _: () = assert!(
-  !mem::needs_drop::<MetaClass>(),
-  "MetaClass's Drop will never be called"
+  !mem::needs_drop::<RuntimeType>(),
+  "RuntimeType's Drop will never be called"
 );
 
-impl MetaClass {
+impl RuntimeType {
   /// # Safety
-  /// `slf` must be a valid type object at the head of a [`MetaClass`]
+  /// `slf` must be a valid type object at the head of a [`RuntimeType`]
   unsafe fn setup<T>(
     slf: NonNull<PyTypeObject>,
     new_fn: NewFn<T>,
@@ -177,7 +177,7 @@ impl MetaClass {
   }
 
   /// # Safety
-  /// The `ty` must have been created as an instance of [`MetaClass`]
+  /// The `ty` must have been created as an instance of [`RuntimeType`]
   unsafe fn get<'a>(ty: Borrowed<'a, '_, PyType>) -> &'a Self {
     // SAFETY: caller ensures the pointer was written to with a valid instance
     unsafe { &*ty.as_type_ptr().cast() }
@@ -201,7 +201,7 @@ impl MetaClass {
 }
 
 /// # Safety
-/// Must be called in `tp_new` slot of type created with `MetaClass` as type data
+/// Must be called in `tp_new` slot of type created with [`RuntimeType`] as type data
 unsafe extern "C" fn tp_new<T>(
   ty: *mut PyTypeObject,
   args: *mut PyObject,
@@ -219,10 +219,10 @@ unsafe extern "C" fn tp_new<T>(
     Bound::from_borrowed_ptr_or_opt(py, kwargs).map(|b| b.cast_into_unchecked())
   };
   // SAFETY: caller upholds requirements
-  let metaclass = unsafe { MetaClass::get(ty.as_borrowed()) };
+  let rtt = unsafe { RuntimeType::get(ty.as_borrowed()) };
 
-  // SAFETY: `Metaclass::setup` stores this fn's ptr with the correct `T`
-  let new_fn = unsafe { metaclass.new_fn::<T>() };
+  // SAFETY: `RuntimeType::new` stores this fn's ptr with the correct `T`
+  let new_fn = unsafe { rtt.new_fn::<T>() };
 
   match new_fn(ty.clone(), args.clone(), kwargs.clone()) {
     Ok(val) => {
@@ -277,9 +277,9 @@ unsafe extern "C" fn tp_init<T>(
     kwargs: Option<Bound<'_, PyDict>>,
   ) -> PyResult<()> {
     // SAFETY: caller upholds requirements
-    let metaclass = unsafe { MetaClass::get(ty.as_borrowed()) };
-    // SAFETY: `Metaclass::setup` stores this fn's ptr with the correct `T`
-    let init_fn = unsafe { metaclass.init_fn::<T>() }.ok_or_else(|| {
+    let rtt = unsafe { RuntimeType::get(ty.as_borrowed()) };
+    // SAFETY: `RuntimeType::new` stores this fn's ptr with the correct `T`
+    let init_fn = unsafe { rtt.init_fn::<T>() }.ok_or_else(|| {
       PySystemError::new_err(format!(
         "could not get init fn for <{}>: {}",
         ty.qualname()
@@ -346,19 +346,19 @@ fn type_data_ptr<T>(obj: Borrowed<'_, '_, PyAny>) -> Option<NonNull<T>> {
   Some(p)
 }
 
-static mut META_CLASS_TYPE: PyTypeObject = PyTypeObject {
-  tp_name: c"pyo3_runtime_types_metaclass".as_ptr(),
+static mut RUNTIME_TYPE_TYPE: PyTypeObject = PyTypeObject {
+  tp_name: c"pyo3_runtime_type".as_ptr(),
   tp_base: &raw mut pyo3::ffi::PyType_Type,
-  tp_basicsize: mem::size_of::<MetaClass>() as pyo3::ffi::Py_ssize_t,
+  tp_basicsize: mem::size_of::<RuntimeType>() as pyo3::ffi::Py_ssize_t,
   #[cfg(not(Py_GIL_DISABLED))]
-  tp_flags: metaclass_flags() as _,
+  tp_flags: runtime_type_flags() as _,
   #[cfg(Py_GIL_DISABLED)]
-  tp_flags: std::sync::atomic::AtomicU64::new(metaclass_flags()),
+  tp_flags: std::sync::atomic::AtomicU64::new(runtime_type_flags()),
   tp_dictoffset: -1,
   ..empty_type_obj()
 };
 
-const fn metaclass_flags() -> c_ulong {
+const fn runtime_type_flags() -> c_ulong {
   Py_TPFLAGS_DEFAULT
     | Py_TPFLAGS_TYPE_SUBCLASS
     | Py_TPFLAGS_DISALLOW_INSTANTIATION
