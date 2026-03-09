@@ -98,7 +98,7 @@ impl<'py, 'n, T> Builder<'py, 'n, T> {
     unsafe {
       RuntimeTypeWithBase::setup(
         ty.cast(),
-        RuntimeType::new(self.new_fn, self.init_fn),
+        RuntimeTypeObject::new(self.new_fn, self.init_fn),
       );
     }
     // SAFETY: python API returns a valid owned reference to a type object
@@ -152,11 +152,11 @@ pub type InitFn<T> = for<'py> fn(
 #[repr(C)]
 struct RuntimeTypeWithBase {
   _ob_base: PyTypeObject,
-  runtime_type: RuntimeType,
+  runtime_type: RuntimeTypeObject,
 }
 
 #[derive(Clone, Copy)]
-struct RuntimeType {
+struct RuntimeTypeObject {
   new_fn: NonNull<()>,
   init_fn: Option<NonNull<()>>,
 }
@@ -167,7 +167,7 @@ const _: () = assert!(
 );
 
 // SAFETY: `type_object_raw` always returns the same pointer
-unsafe impl PyTypeInfo for RuntimeType {
+unsafe impl PyTypeInfo for RuntimeTypeObject {
   const NAME: &str = "pyo3_runtime_type";
   const MODULE: Option<&str> = None;
 
@@ -176,7 +176,7 @@ unsafe impl PyTypeInfo for RuntimeType {
   }
 }
 
-impl<'a, 'py> FromPyObject<'a, 'py> for RuntimeType {
+impl<'a, 'py> FromPyObject<'a, 'py> for RuntimeTypeObject {
   type Error = PyErr;
 
   fn extract(obj: Borrowed<'a, 'py, PyAny>) -> Result<Self, Self::Error> {
@@ -190,7 +190,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for RuntimeType {
   }
 }
 
-impl RuntimeType {
+impl RuntimeTypeObject {
   fn new<T>(new_fn: NewFn<T>, init_fn: Option<InitFn<T>>) -> Self {
     Self {
       new_fn: NonNull::new(new_fn as *mut ()).unwrap(),
@@ -217,8 +217,8 @@ impl RuntimeType {
 
 impl RuntimeTypeWithBase {
   /// # Safety
-  /// `slf` must be a valid type object at the head of a [`RuntimeType`]
-  unsafe fn setup(slf: NonNull<PyTypeObject>, runtime_type: RuntimeType) {
+  /// `slf` must be a valid type object at the head of a [`RuntimeTypeObject`]
+  unsafe fn setup(slf: NonNull<PyTypeObject>, runtime_type: RuntimeTypeObject) {
     let slf = slf.cast::<Self>();
     // SAFETY: caller upholds requirements
     unsafe {
@@ -228,7 +228,7 @@ impl RuntimeTypeWithBase {
 }
 
 /// # Safety
-/// Must be called in `tp_new` slot of type created with [`RuntimeType`] as type data
+/// Must be called in `tp_new` slot of type created with [`RuntimeTypeObject`] as type data
 unsafe extern "C" fn tp_new<T>(
   ty: *mut PyTypeObject,
   args: *mut PyObject,
@@ -245,7 +245,7 @@ unsafe extern "C" fn tp_new<T>(
   let kwargs: Option<Bound<'_, PyDict>> = unsafe {
     Bound::from_borrowed_ptr_or_opt(py, kwargs).map(|b| b.cast_into_unchecked())
   };
-  let rtt: RuntimeType = match ty.extract() {
+  let rtt: RuntimeTypeObject = match ty.extract() {
     Ok(rtt) => rtt,
     Err(err) => {
       err.restore(py);
@@ -253,7 +253,7 @@ unsafe extern "C" fn tp_new<T>(
     },
   };
 
-  // SAFETY: `RuntimeType::new` stores this fn's ptr with the correct `T`
+  // SAFETY: `RuntimeTypeObject::new` stores this fn's ptr with the correct `T`
   let new_fn = unsafe { rtt.new_fn::<T>() };
 
   match new_fn(ty.clone(), args.clone(), kwargs.clone()) {
@@ -308,8 +308,8 @@ unsafe extern "C" fn tp_init<T>(
     args: Bound<'_, PyTuple>,
     kwargs: Option<Bound<'_, PyDict>>,
   ) -> PyResult<()> {
-    let rtt: RuntimeType = ty.extract()?;
-    // SAFETY: `RuntimeType::new` stores this fn's ptr with the correct `T`
+    let rtt: RuntimeTypeObject = ty.extract()?;
+    // SAFETY: `RuntimeTypeObject::new` stores this fn's ptr with the correct `T`
     let init_fn = unsafe { rtt.init_fn::<T>() }.ok_or_else(|| {
       PySystemError::new_err(format!(
         "could not get init fn for <{}>: {}",
