@@ -17,23 +17,23 @@ mod tp;
 mod typeobject;
 
 pub struct Builder<'py, 'n, T> {
-  new_fn: NewFn<T>,
   flags: c_ulong,
-  init_fn: Option<InitFn<T>>,
-  name: Cow<'n, str>,
   module: Option<Bound<'py, PyModule>>,
+  name: Cow<'n, str>,
   bases: Vec<Bound<'py, PyType>>,
+  new_fn: Option<NewFn<T>>,
+  init_fn: Option<InitFn<T>>,
 }
 
 impl<'py, 'n, T> Builder<'py, 'n, T> {
-  pub fn new(name: impl Into<Cow<'n, str>>, new_fn: NewFn<T>) -> Self {
+  pub fn new(name: impl Into<Cow<'n, str>>) -> Self {
     Builder {
-      new_fn,
       flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE),
-      init_fn: None,
-      name: name.into(),
       module: None,
+      name: name.into(),
       bases: Vec::new(),
+      new_fn: None,
+      init_fn: None,
     }
   }
 
@@ -47,6 +47,11 @@ impl<'py, 'n, T> Builder<'py, 'n, T> {
 
   pub fn module(&mut self, module: Bound<'py, PyModule>) -> &mut Self {
     self.module = Some(module);
+    self
+  }
+
+  pub fn new_fn(&mut self, new_fn: NewFn<T>) -> &mut Self {
+    self.new_fn = Some(new_fn);
     self
   }
 

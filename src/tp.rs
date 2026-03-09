@@ -4,7 +4,7 @@
 use std::ffi::c_int;
 use std::ptr::{self, NonNull};
 
-use pyo3::exceptions::PySystemError;
+use pyo3::exceptions::{PySystemError, PyTypeError};
 use pyo3::ffi::{PyObject, PyType_GenericNew, PyTypeObject};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyString, PyTuple, PyType};
@@ -38,7 +38,14 @@ pub(crate) unsafe extern "C" fn new<T>(
   };
 
   // SAFETY: `RuntimeTypeObject::new` stores this fn's ptr with the correct `T`
-  let new_fn = unsafe { rtt.new_fn::<T>() };
+  let Some(new_fn) = (unsafe { rtt.new_fn::<T>() }) else {
+    PyTypeError::new_err(format!(
+      "{} can only be instantiated from native code",
+      ty.name().unwrap_or_else(|_| PyString::new(py, "<unknown>"))
+    ))
+    .restore(py);
+    return ptr::null_mut();
+  };
 
   match new_fn(ty.clone(), args.clone(), kwargs.clone()) {
     Ok(val) => {

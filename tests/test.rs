@@ -15,8 +15,10 @@ fn obj_created_inited_and_destroyed() {
 
   Python::initialize();
   Python::attach(|py| {
-    let mut builder = Builder::new("S", Box::new(|_, _, _| Ok(S::default())));
-    builder.init_fn(Box::new(|slf, _, _, _| slf.__init__()));
+    let mut builder = Builder::new("S");
+    builder
+      .new_fn(Box::new(|_, _, _| Ok(S::default())))
+      .init_fn(Box::new(|slf, _, _, _| slf.__init__()));
     let ty = builder.build(py).unwrap();
     let obj = ty.call0().unwrap();
     drop(obj);

@@ -72,10 +72,14 @@ impl Drop for RuntimeTypeObject {
 }
 
 impl RuntimeTypeObject {
-  pub(crate) fn new<T>(new_fn: NewFn<T>, init_fn: Option<InitFn<T>>) -> Self {
+  pub(crate) fn new<T>(
+    new_fn: Option<NewFn<T>>,
+    init_fn: Option<InitFn<T>>,
+  ) -> Self {
     fn new_fn_drop<T>(new_fn: [*mut (); 2]) {
       // SAFETY: undoing transmute below
-      let _ = unsafe { mem::transmute::<[*mut (); 2], NewFn<T>>(new_fn) };
+      let _ =
+        unsafe { mem::transmute::<[*mut (); 2], Option<NewFn<T>>>(new_fn) };
     }
     fn init_fn_drop<T>(init_fn: [*mut (); 2]) {
       // SAFETY: undoing transmute below
@@ -86,7 +90,7 @@ impl RuntimeTypeObject {
     // SAFETY: these function pointers will only be accessed from the getter functions
     unsafe {
       Self {
-        new_fn: mem::transmute::<NewFn<T>, [*mut (); 2]>(new_fn),
+        new_fn: mem::transmute::<Option<NewFn<T>>, [*mut (); 2]>(new_fn),
         new_fn_drop: new_fn_drop::<T> as *mut (),
         init_fn: mem::transmute::<Option<InitFn<T>>, [*mut (); 2]>(init_fn),
         init_fn_drop: init_fn_drop::<T> as *mut (),
@@ -142,7 +146,7 @@ impl RuntimeTypeObject {
 
   /// # Safety
   /// `self` must have been constructed as `T`
-  pub(crate) unsafe fn new_fn<T>(&self) -> NewFn<T> {
+  pub(crate) unsafe fn new_fn<T>(&self) -> Option<NewFn<T>> {
     // SAFETY: new_fn is set in `new` and caller ensures that `T` is correct
     unsafe { mem::transmute(self.new_fn) }
   }
