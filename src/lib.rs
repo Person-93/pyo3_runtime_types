@@ -1,15 +1,16 @@
 use std::borrow::Cow;
-use std::ffi::{CString, c_ulong, c_void};
+use std::ffi::{CString, c_int, c_ulong, c_void};
 use std::mem;
 use std::ptr::{self, NonNull};
 
 use pyo3::PyTypeInfo as _;
+use pyo3::exceptions::PySystemError;
 use pyo3::ffi::{
   Py_TPFLAGS_DEFAULT, Py_TPFLAGS_DISALLOW_INSTANTIATION, Py_TPFLAGS_HEAPTYPE,
-  Py_TPFLAGS_TYPE_SUBCLASS, Py_tp_finalize, Py_tp_new, PyObject,
-  PyObject_GetTypeData, PyObject_HEAD_INIT, PyType_FromMetaclass,
-  PyType_GenericNew, PyType_Ready, PyType_Slot, PyType_Spec, PyTypeObject,
-  PyVarObject, destructor, newfunc,
+  Py_TPFLAGS_TYPE_SUBCLASS, Py_tp_finalize, Py_tp_init, Py_tp_new, PyObject,
+  PyObject_HEAD_INIT, PyType_FromMetaclass, PyType_GenericNew, PyType_Ready,
+  PyType_Slot, PyType_Spec, PyTypeObject, PyVarObject, destructor, initproc,
+  newfunc,
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyString, PyTuple, PyType};
@@ -220,19 +221,11 @@ unsafe extern "C" fn tp_new<T>(
         )) else {
           return ptr::null_mut();
         };
+        let obj = Borrowed::from_ptr(py, obj.as_ptr());
 
-        let Some(p) = NonNull::new(
-          PyObject_GetTypeData(obj.as_ptr(), ty.as_type_ptr()).cast::<T>(),
-        ) else {
+        let Some(p) = type_data_ptr::<T>(obj) else {
           return ptr::null_mut();
         };
-        assert!(
-          p.is_aligned(),
-          "TypeData for <{}> is not properly aligned `{}`",
-          ty.qualname()
-            .unwrap_or_else(|_| PyString::new(py, "<unknown>")),
-          core::any::type_name::<T>()
-        );
         p.write(val);
 
         obj.as_ptr()
@@ -248,14 +241,46 @@ unsafe extern "C" fn tp_new<T>(
 /// # Safety
 /// The `obj` must have been created with [`tp_new`]
 unsafe extern "C" fn tp_finalize<T>(obj: *mut PyObject) {
-  // SAFETY: the pyobject's type data was created using the `new_fn`
-  unsafe {
-    if let Some(p) =
-      NonNull::new(PyObject_GetTypeData(obj, (*obj).ob_type).cast::<T>())
-    {
-      p.drop_in_place();
-    }
+  // SAFETY: this function will only be called by python
+  let py = unsafe { Python::assume_attached() };
+  // SAFETY: python just gave this to us and we only use it in the body of this fn
+  let obj = unsafe { Borrowed::from_ptr(py, obj) };
+  if let Some(p) = type_data_ptr::<T>(obj) {
+    // SAFETY: the pyobject's type data was created using the `new_fn`
+    unsafe { p.drop_in_place() };
   }
+}
+
+/// Gets the object's type data as `T`. Returns [`None`] if the type data can't
+/// be retreieved from python.
+/// # Safety
+/// The object's type data must be a valid `T`
+unsafe fn type_data<'a, T>(obj: Borrowed<'a, '_, PyAny>) -> PyResult<&'a T> {
+  type_data_ptr(obj).map_or_else(
+    || Err(PyErr::fetch(obj.py())),
+    // SAFETY: caller upholds requirements
+    |p| unsafe { Ok(p.as_ref()) },
+  )
+}
+
+fn type_data_ptr<T>(obj: Borrowed<'_, '_, PyAny>) -> Option<NonNull<T>> {
+  use pyo3::ffi::PyObject_GetTypeData;
+  let ty = obj.get_type();
+  // SAFETY: calling python API with pointers from pyo3
+  let p = unsafe {
+    NonNull::new(
+      PyObject_GetTypeData(obj.as_ptr(), ty.as_type_ptr()).cast::<T>(),
+    )
+  }?;
+
+  assert!(
+    p.is_aligned(),
+    "TypeData for <{}> is not properly aligned `{}`",
+    ty.qualname()
+      .unwrap_or_else(|_| PyString::new(obj.py(), "<unknown>")),
+    core::any::type_name::<T>()
+  );
+  Some(p)
 }
 
 static mut META_CLASS_TYPE: PyTypeObject = PyTypeObject {
