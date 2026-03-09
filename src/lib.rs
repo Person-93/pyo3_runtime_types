@@ -65,12 +65,12 @@ impl<'py, 'n, T> PyTypeBuilder<'py, 'n, T> {
     self
   }
 
-  pub fn new_fn(&mut self, new_fn: NewFn<T>) -> &mut Self {
+  pub fn new_fn(&mut self, new_fn: Box<NewFn<T>>) -> &mut Self {
     self.new_fn = Some(new_fn);
     self
   }
 
-  pub fn init_fn(&mut self, init_fn: InitFn<T>) -> &mut Self {
+  pub fn init_fn(&mut self, init_fn: Box<InitFn<T>>) -> &mut Self {
     self.init_fn = Some(init_fn);
     self
   }
@@ -108,7 +108,9 @@ impl<'py, 'n, T> PyTypeBuilder<'py, 'n, T> {
       self.flags as _,
     );
 
-    spec.push_slot(Py_tp_new, tp::new::<T> as newfunc as *mut c_void);
+    if self.new_fn.is_some() {
+      spec.push_slot(Py_tp_new, tp::new::<T> as newfunc as *mut c_void);
+    }
     if mem::needs_drop::<T>() {
       spec.push_slot(
         Py_tp_finalize,
@@ -123,19 +125,15 @@ impl<'py, 'n, T> PyTypeBuilder<'py, 'n, T> {
   }
 }
 
-pub type NewFn<T> = Box<
-  dyn for<'py> Fn(
-    Bound<'py, PyType>,
-    Bound<'py, PyTuple>,
-    Option<Bound<'py, PyDict>>,
-  ) -> PyResult<T>,
->;
+pub type NewFn<T> = dyn for<'py> Fn(
+  Bound<'py, PyType>,
+  Bound<'py, PyTuple>,
+  Option<Bound<'py, PyDict>>,
+) -> PyResult<T>;
 
-pub type InitFn<T> = Box<
-  dyn for<'py> Fn(
-    &T,
-    Bound<'py, PyType>,
-    Bound<'py, PyTuple>,
-    Option<Bound<'py, PyDict>>,
-  ) -> PyResult<()>,
->;
+pub type InitFn<T> = dyn for<'py> Fn(
+  &T,
+  Bound<'py, PyType>,
+  Bound<'py, PyTuple>,
+  Option<Bound<'py, PyDict>>,
+) -> PyResult<()>;

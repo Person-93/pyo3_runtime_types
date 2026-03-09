@@ -100,7 +100,7 @@ pub(crate) unsafe extern "C" fn init<T>(
 
   fn inner<T>(
     slf: Borrowed<'_, '_, PyAny>,
-    ty: Bound<'_, PyType>,
+    ty: Borrowed<'_, '_, PyType>,
     args: Bound<'_, PyTuple>,
     kwargs: Option<Bound<'_, PyDict>>,
   ) -> PyResult<()> {
@@ -116,10 +116,10 @@ pub(crate) unsafe extern "C" fn init<T>(
     })?;
     // SAFETY: python will only call this function after `tp_new` runs
     let t = unsafe { type_data(slf.as_borrowed()) }?;
-    init_fn(t, ty, args, kwargs)
+    init_fn(t, ty.to_owned(), args, kwargs)
   }
 
-  match inner::<T>(slf.as_borrowed(), ty, args, kwargs) {
+  match inner::<T>(slf.as_borrowed(), ty.as_borrowed(), args, kwargs) {
     Ok(()) => 0,
     Err(err) => {
       err.restore(py);
