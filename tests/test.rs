@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::prelude::*;
 
-use pyo3_runtime_types::Builder;
+use pyo3_runtime_types::PyTypeBuilder;
 
 #[test]
 fn obj_created_inited_and_destroyed() {
@@ -15,7 +15,8 @@ fn obj_created_inited_and_destroyed() {
 
   Python::initialize();
   Python::attach(|py| {
-    let mut builder = Builder::new("S", Box::new(|_, _, _| Ok(S::default())));
+    let mut builder =
+      PyTypeBuilder::new("S", Box::new(|_, _, _| Ok(S::default())));
     builder.init_fn(Box::new(|slf, _, _, _| slf.__init__()));
     let ty = builder.build(py).unwrap();
     let obj = ty.call0().unwrap();

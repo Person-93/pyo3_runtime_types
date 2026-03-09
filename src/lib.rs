@@ -18,7 +18,7 @@ mod tp;
 mod typeobject;
 mod typespec;
 
-pub struct Builder<'py, 'n, T> {
+pub struct PyTypeBuilder<'py, 'n, T> {
   flags: c_ulong,
   module: Option<Bound<'py, PyModule>>,
   name: Cow<'n, str>,
@@ -27,10 +27,10 @@ pub struct Builder<'py, 'n, T> {
   init_fn: Option<InitFn<T>>,
 }
 
-impl<'py, 'n, T> Builder<'py, 'n, T> {
+impl<'py, 'n, T> PyTypeBuilder<'py, 'n, T> {
   pub fn new(name: impl Into<Cow<'n, str>>, new_fn: NewFn<T>) -> Self {
     // SAFETY: new_fn is set right after this call
-    let mut this = unsafe { Builder::new_without_new_fn(name) };
+    let mut this = unsafe { PyTypeBuilder::new_without_new_fn(name) };
     this.new_fn(new_fn);
     this
   }
@@ -42,7 +42,7 @@ impl<'py, 'n, T> Builder<'py, 'n, T> {
   /// - set the new_fn by calling [`Self::new_fn`] before [`Self::build`]
   /// - manually set the type data for every instance of the new python type
   pub unsafe fn new_without_new_fn(name: impl Into<Cow<'n, str>>) -> Self {
-    Builder {
+    PyTypeBuilder {
       flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE),
       module: None,
       name: name.into(),
