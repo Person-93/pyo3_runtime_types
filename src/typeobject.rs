@@ -12,7 +12,7 @@ use pyo3::ffi::{
 };
 use pyo3::prelude::*;
 use pyo3::type_object::PyTypeInfo;
-use pyo3::types::PyType;
+use pyo3::types::{PyString, PyType};
 
 use crate::{InitFn, NewFn};
 
@@ -46,7 +46,18 @@ impl<'a, 'py> FromPyObject<'a, 'py> for RuntimeTypeObject {
       // SAFETY: we just checked if it's the right type
       unsafe { Ok(*ptr::addr_of!((*with_base).runtime_type)) }
     } else {
-      Err(PyTypeError::new_err("something went wrong")) // TODO error message
+      Err(PyTypeError::new_err(format!(
+        "expected type to be an instance of {} metaclass",
+        Self::type_object(obj.py())
+          .name()
+          .unwrap_or_else(|_| PyString::new(
+            obj.py(),
+            #[expect(deprecated, reason = "used as fallback")]
+            {
+              Self::NAME
+            }
+          )),
+      )))
     }
   }
 }
