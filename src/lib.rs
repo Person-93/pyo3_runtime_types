@@ -110,7 +110,6 @@ impl<'py, 'n, T> Builder<'py, 'n, T> {
     Ok(ty)
   }
 
-  #[expect(clippy::unused_self, reason = "not yet implemented")]
   fn slots(&self) -> Vec<PyType_Slot> {
     let mut slots = vec![PyType_Slot {
       slot: Py_tp_new,
@@ -120,6 +119,12 @@ impl<'py, 'n, T> Builder<'py, 'n, T> {
       slots.push(PyType_Slot {
         slot: Py_tp_finalize,
         pfunc: tp_finalize::<T> as destructor as *mut c_void,
+      });
+    }
+    if self.init_fn.is_some() {
+      slots.push(PyType_Slot {
+        slot: Py_tp_init,
+        pfunc: tp_init::<T> as initproc as *mut c_void,
       });
     }
 
@@ -135,7 +140,7 @@ pub type NewFn<T> = for<'py> fn(
 ) -> PyResult<T>;
 
 pub type InitFn<T> = for<'py> fn(
-  &mut T,
+  &T,
   ty: Bound<'py, PyType>,
   args: Bound<'py, PyTuple>,
   kwargs: Option<Bound<'py, PyDict>>,
@@ -145,7 +150,7 @@ pub type InitFn<T> = for<'py> fn(
 struct MetaClass {
   _ob_base: PyTypeObject,
   new_fn: NonNull<()>,
-  init_fn: Option<NonNull<()>>, // TODO run init fn
+  init_fn: Option<NonNull<()>>,
 }
 
 const _: () = assert!(
@@ -183,6 +188,15 @@ impl MetaClass {
   unsafe fn new_fn<T>(&self) -> NewFn<T> {
     // SAFETY: new_fn is set in `setup` and caller ensures that `T` is correct
     unsafe { mem::transmute(self.new_fn) }
+  }
+
+  /// # Safety
+  /// `self` must have been setup with `T`
+  unsafe fn init_fn<T>(&self) -> Option<InitFn<T>> {
+    // SAFETY: init_fn is set in `setup` and caller ensures that `T` is correct
+    self
+      .init_fn
+      .map(|init_fn| unsafe { mem::transmute(init_fn) })
   }
 }
 
@@ -234,6 +248,55 @@ unsafe extern "C" fn tp_new<T>(
     Err(err) => {
       err.restore(py);
       ptr::null_mut()
+    },
+  }
+}
+
+unsafe extern "C" fn tp_init<T>(
+  slf: *mut PyObject,
+  args: *mut PyObject,
+  kwargs: *mut PyObject,
+) -> c_int {
+  // SAFETY: caller ensures this function is only called by python runtime
+  let py = unsafe { Python::assume_attached() };
+  // SAFETY: python doesn't give null self
+  let slf = unsafe { Bound::from_borrowed_ptr(py, slf) };
+  let ty = slf.get_type();
+  // SAFETY: python always gives args as non-null PyTuple
+  let args: Bound<'_, PyTuple> =
+    unsafe { Bound::from_borrowed_ptr(py, args).cast_into_unchecked() };
+  // SAFETY: python gives kwargs as PyDict and we check for null
+  let kwargs: Option<Bound<'_, PyDict>> = unsafe {
+    Bound::from_borrowed_ptr_or_opt(py, kwargs).map(|b| b.cast_into_unchecked())
+  };
+
+  fn inner<T>(
+    slf: Borrowed<'_, '_, PyAny>,
+    ty: Bound<'_, PyType>,
+    args: Bound<'_, PyTuple>,
+    kwargs: Option<Bound<'_, PyDict>>,
+  ) -> PyResult<()> {
+    // SAFETY: caller upholds requirements
+    let metaclass = unsafe { MetaClass::get(ty.as_borrowed()) };
+    // SAFETY: `Metaclass::setup` stores this fn's ptr with the correct `T`
+    let init_fn = unsafe { metaclass.init_fn::<T>() }.ok_or_else(|| {
+      PySystemError::new_err(format!(
+        "could not get init fn for <{}>: {}",
+        ty.qualname()
+          .unwrap_or_else(|_| PyString::new(ty.py(), "<unknown>")),
+        core::any::type_name::<T>()
+      ))
+    })?;
+    // SAFETY: python will only call this function after `tp_new` runs
+    let t = unsafe { type_data(slf.as_borrowed()) }?;
+    init_fn(t, ty, args, kwargs)
+  }
+
+  match inner::<T>(slf.as_borrowed(), ty, args, kwargs) {
+    Ok(()) => 0,
+    Err(err) => {
+      err.restore(py);
+      -1
     },
   }
 }
@@ -383,6 +446,8 @@ const fn empty_type_obj() -> PyTypeObject {
 }
 
 #[cfg(test)]
+#[expect(clippy::allow_attributes, reason = "tests")]
+#[allow(clippy::unnecessary_wraps, clippy::unused_self, reason = "tests")]
 mod tests {
   use super::*;
 
@@ -398,6 +463,7 @@ mod tests {
     Python::initialize();
     Python::attach(|py| {
       let ty = Builder::new("S", |_, _, _| Ok(S::default()))
+        .init_fn(|slf, _, _, _| slf.__init__())
         .build(py)
         .unwrap();
       let obj = ty.call0().unwrap();
@@ -410,7 +476,7 @@ mod tests {
         .unwrap();
     });
 
-    // assert!(INIT.with(|b| b.load(Ordering::SeqCst)));
+    assert!(INIT.with(|b| b.load(Ordering::SeqCst)));
     assert!(DESTROY.with(|b| b.load(Ordering::SeqCst)));
 
     #[derive(Default)]
@@ -418,11 +484,12 @@ mod tests {
       _n: i32, // prevent it from being a ZST
     }
 
-    // impl S {
-    //   fn __init__(&self) {
-    //     INIT.with(|b| b.store(true, Ordering::SeqCst));
-    //   }
-    // }
+    impl S {
+      fn __init__(&self) -> PyResult<()> {
+        INIT.with(|b| b.store(true, Ordering::SeqCst));
+        Ok(())
+      }
+    }
 
     impl Drop for S {
       fn drop(&mut self) {
