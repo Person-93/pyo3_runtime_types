@@ -3,19 +3,19 @@ name: CI
 on:
   push:
     branches:
-    - master
+      - main
     paths:
-    - '**'
-    - "!/*.md"
-    - "!/docs/**"
-    - "!/LICENSE-*.txt"
+      - "**"
+      - "!/*.md"
+      - "!/docs/**"
+      - "!/LICENSE-*.txt"
 
   pull_request:
     paths:
-    - '**'
-    - "!/*.md"
-    - "!/docs/**"
-    - "!/LICENSE-*.txt"
+      - "**"
+      - "!/*.md"
+      - "!/docs/**"
+      - "!/LICENSE-*.txt"
 
   workflow_dispatch:
 
@@ -25,8 +25,8 @@ jobs:
     needs: [smoke, test, docs, rustfmt, clippy]
     runs-on: ubuntu-latest
     steps:
-    - name: Done
-      run: exit 0
+      - name: Done
+        run: exit 0
 
   test:
     needs: smoke
@@ -41,115 +41,64 @@ jobs:
     continue-on-error: ${{ matrix.rust != 'stable' }}
 
     steps:
-    - uses: actions/checkout@v2
-
-    - uses: actions-rs/toolchain@v1
-      id: toolchain
-      with:
-        profile: minimal
-        toolchain: ${{ matrix.rust }}
-        override: true
-
-    - uses: Swatinem/rust-cache@v1.3.0
-
-    - uses: actions-rs/cargo@v1
-      with:
-        command: install
-        args: cargo-feature-matrix
-
-    - uses: actions-rs/cargo@v1
-      with:
-        command: feature-matrix
-        args: test
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.rust }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+      - uses: extractions/setup-just@v3
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-feature-matrix nextest
+      - run: cargo feature-matrix --no-cargo just -- test
 
   docs:
     name: Docs
     needs: smoke
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
-
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        profile: minimal
-        override: true
-
-    - uses: Swatinem/rust-cache@v1.3.0
-
-    - name: Check Documentation
-      env:
-        RUSTDOCFLAGS: -D warnings
-      uses: actions-rs/cargo@v1
-      with:
-        command: doc
-        args: --no-deps --document-private-items --workspace
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check Documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps --document-private-items --workspace
 
   rustfmt:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
-
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        profile: minimal
-        override: true
-        components: rustfmt
-
-    - uses: Swatinem/rust-cache@v1.3.0
-
-    - name: Check Formatting
-      uses: actions-rs/cargo@v1
-      with:
-        command: fmt
-        args: --all -- --check
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check Formatting
+        run: cargo fmt --all -- --check
 
   clippy:
     needs: smoke
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v1
-
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        components: clippy
-        override: true
-
-    - uses: actions-rs/clippy-check@v1
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-        args: --workspace --all-features --all-targets -- -D warnings
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --all-features --all-targets -- -D warnings
 
   smoke:
     name: Quick Check
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v2
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
 
-    - uses: actions-rs/toolchain@v1
-      with:
-        toolchain: stable
-        profile: minimal
-        override: true
+      - name: Default Features
+        run: cargo check --workspace --all-targets
 
-    - uses: Swatinem/rust-cache@v1.3.0
+      - name: All Features
+        run: cargo check --workspace --all-targets --all-features
 
-    - name: Default Features
-      uses: actions-rs/cargo@v1
-      with:
-        command: check
-        args: --workspace --all-targets
-
-    - name: All Features
-      uses: actions-rs/cargo@v1
-      with:
-        command: check
-        args: --workspace --all-targets --all-features
-
-    - name: No Default Features
-      uses: actions-rs/cargo@v1
-      with:
-        command: check
-        args: --workspace --all-targets --no-default-features
+      - name: No Default Features
+        run: cargo check --workspace --all-targets --no-default-features
