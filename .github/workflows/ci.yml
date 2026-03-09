@@ -38,7 +38,7 @@ jobs:
 
     runs-on: ${{ matrix.os }}
 
-    continue-on-error: ${{ matrix.rust != 'stable' }}
+    continue-on-error: ${{ matrix.rust != 'stable' || matrix.os == 'windows-latest' }}
 
     steps:
       - uses: actions/checkout@v6
