@@ -200,7 +200,6 @@ static mut RUNTIME_TYPE_TYPE: PyTypeObject = PyTypeObject {
   tp_flags: runtime_type_flags() as _,
   #[cfg(Py_GIL_DISABLED)]
   tp_flags: std::sync::atomic::AtomicU64::new(runtime_type_flags()),
-  tp_dictoffset: -1,
   ..empty_type_obj()
 };
 
