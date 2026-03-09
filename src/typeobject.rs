@@ -6,7 +6,7 @@ use std::{mem, ptr};
 
 use pyo3::exceptions::PyTypeError;
 use pyo3::ffi::{
-  Py_TPFLAGS_DEFAULT, Py_TPFLAGS_DISALLOW_INSTANTIATION,
+  Py_TPFLAGS_BASETYPE, Py_TPFLAGS_DEFAULT, Py_TPFLAGS_DISALLOW_INSTANTIATION,
   Py_TPFLAGS_TYPE_SUBCLASS, PyObject, PyObject_HEAD_INIT, PyType_FromMetaclass,
   PyType_Ready, PyTypeObject, PyVarObject, destructor,
 };
@@ -14,8 +14,9 @@ use pyo3::prelude::*;
 use pyo3::type_object::PyTypeInfo;
 use pyo3::types::{PyString, PyType};
 
+use crate::data_ptr::type_data_ptr;
 use crate::typespec::TypeSpec;
-use crate::{InitFn, NewFn};
+use crate::{InitFn, MetaclassWithData, NewFn};
 
 pub(crate) struct RuntimeTypeObject {
   new_fn: [*mut (); 2],
@@ -106,9 +107,11 @@ impl RuntimeTypeObject {
   }
 
   /// # Safety
-  /// `spec` must be valid for the python API
+  /// `spec` must be valid for the python API and `metaclass` must have been
+  /// constructed with the rust type for the type's type-data
   pub(crate) unsafe fn make_type<'py>(
     self,
+    metaclass: Option<MetaclassWithData>,
     mut spec: TypeSpec,
     bases: Borrowed<'_, 'py, PyAny>,
     module: Option<Borrowed<'_, 'py, PyModule>>,
@@ -117,10 +120,15 @@ impl RuntimeTypeObject {
 
     Self::ready(py)?;
 
+    let (metaclass, metaclass_data) = metaclass.map_or_else(
+      || (Self::type_object(py), None),
+      |mc| (mc.py_type, mc.data),
+    );
+
     // SAFETY: all the pointers refer to objects in this scope
     let Some(ty) = (unsafe {
       NonNull::new(PyType_FromMetaclass(
-        Self::type_object_raw(py),
+        metaclass.as_type_ptr(),
         module.map(Borrowed::as_ptr).unwrap_or_default(),
         spec.finish(),
         bases.as_ptr(),
@@ -133,6 +141,12 @@ impl RuntimeTypeObject {
       Bound::from_owned_ptr(py, ty.as_ptr()).cast_into_unchecked::<PyType>()
     };
     RuntimeTypeWithBase::setup(ty.as_borrowed(), self);
+
+    if let Some(metaclass_data) = metaclass_data {
+      let tp_data = type_data_ptr::<()>(ty.as_any().as_borrowed()).unwrap();
+      // SAFETY: caller ensures that the pointers are the same type
+      unsafe { (metaclass_data.mover)(metaclass_data.ptr, tp_data) };
+    }
 
     if let Some(module) = module {
       module.add(spec.name(), &ty)?;
@@ -215,6 +229,7 @@ const fn runtime_type_flags() -> c_ulong {
   Py_TPFLAGS_DEFAULT
     | Py_TPFLAGS_TYPE_SUBCLASS
     | Py_TPFLAGS_DISALLOW_INSTANTIATION
+    | Py_TPFLAGS_BASETYPE
 }
 
 const fn empty_type_obj() -> PyTypeObject {

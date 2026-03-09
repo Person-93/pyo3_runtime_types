@@ -1,11 +1,15 @@
+use std::alloc::{Layout, dealloc};
 use std::borrow::Cow;
 use std::ffi::{CString, c_ulong, c_void};
+use std::marker::PhantomData;
 use std::mem;
+use std::ptr::NonNull;
 
 use pyo3::PyTypeInfo as _;
+use pyo3::exceptions::PySystemError;
 use pyo3::ffi::{
-  Py_TPFLAGS_DEFAULT, Py_TPFLAGS_HEAPTYPE, Py_tp_finalize, Py_tp_init,
-  Py_tp_new, destructor, initproc, newfunc,
+  Py_TPFLAGS_DEFAULT, Py_TPFLAGS_HEAPTYPE, Py_TPFLAGS_TYPE_SUBCLASS,
+  Py_tp_finalize, Py_tp_init, Py_tp_new, destructor, initproc, newfunc,
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple, PyType};
@@ -22,13 +26,14 @@ pub struct PyTypeBuilder<'py, 'n, T> {
   flags: c_ulong,
   module: Option<Bound<'py, PyModule>>,
   name: Cow<'n, str>,
+  metaclass: Option<MetaclassWithData<'py>>,
   bases: Vec<Bound<'py, PyType>>,
-  new_fn: Option<NewFn<T>>,
-  init_fn: Option<InitFn<T>>,
+  new_fn: Option<Box<NewFn<T>>>,
+  init_fn: Option<Box<InitFn<T>>>,
 }
 
 impl<'py, 'n, T> PyTypeBuilder<'py, 'n, T> {
-  pub fn new(name: impl Into<Cow<'n, str>>, new_fn: NewFn<T>) -> Self {
+  pub fn new(name: impl Into<Cow<'n, str>>, new_fn: Box<NewFn<T>>) -> Self {
     // SAFETY: new_fn is set right after this call
     let mut this = unsafe { PyTypeBuilder::new_without_new_fn(name) };
     this.new_fn(new_fn);
@@ -46,6 +51,7 @@ impl<'py, 'n, T> PyTypeBuilder<'py, 'n, T> {
       flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE),
       module: None,
       name: name.into(),
+      metaclass: None,
       bases: Vec::new(),
       new_fn: None,
       init_fn: None,
@@ -55,9 +61,19 @@ impl<'py, 'n, T> PyTypeBuilder<'py, 'n, T> {
   pub fn bases(
     &mut self,
     bases: impl IntoIterator<Item = Bound<'py, PyType>>,
-  ) -> &mut Self {
-    self.bases.extend(bases);
-    self
+  ) -> PyResult<&mut Self> {
+    let bases = bases.into_iter();
+    self.bases.reserve_exact(bases.size_hint().0);
+    for base in bases {
+      if base.is_subclass(&PyType::type_object(base.py()))? {
+        return Err(PySystemError::new_err(
+          "pyo3_runtime_type may not use the type builder to extend `type`, \
+            use the `new_metaclass` function if you intend to make a metaclass",
+        ));
+      }
+      self.bases.push(base);
+    }
+    Ok(self)
   }
 
   pub fn module(&mut self, module: Bound<'py, PyModule>) -> &mut Self {
@@ -78,10 +94,11 @@ impl<'py, 'n, T> PyTypeBuilder<'py, 'n, T> {
   pub fn build(self, py: Python<'py>) -> PyResult<Bound<'py, PyType>> {
     let spec = self.spec()?;
 
-    let bases = if self.bases.is_empty() {
-      PyAny::type_object(py).into_any()
-    } else {
-      PyTuple::new(py, &self.bases)?.into_any()
+    let mut bases = self.bases;
+    let bases = match bases.len() {
+      0 => PyAny::type_object(py).into_any(),
+      1 => bases.remove(0).into_any(),
+      _ => PyTuple::new(py, &bases)?.into_any(),
     };
 
     let rtt = RuntimeTypeObject::new(self.new_fn, self.init_fn);
@@ -89,7 +106,7 @@ impl<'py, 'n, T> PyTypeBuilder<'py, 'n, T> {
 
     // SAFETY: we just created a valid `spec` and all the pointers it
     //         contains point to things still in scope
-    unsafe { rtt.make_type(spec, bases.as_borrowed(), module) }
+    unsafe { rtt.make_type(self.metaclass, spec, bases.as_borrowed(), module) }
   }
 
   fn spec(&self) -> PyResult<TypeSpec> {
@@ -137,3 +154,72 @@ pub type InitFn<T> = dyn for<'py> Fn(
   Bound<'py, PyTuple>,
   Option<Bound<'py, PyDict>>,
 ) -> PyResult<()>;
+
+pub struct Metaclass<T> {
+  py_type: Py<PyType>,
+  _marker: PhantomData<fn() -> T>,
+}
+
+struct MetaclassWithData<'py> {
+  py_type: Bound<'py, PyType>,
+  data: Option<MetaclassData>,
+}
+
+struct MetaclassData {
+  ptr: NonNull<()>, // TODO store small btye-slice inline
+  mover: unsafe fn(src: NonNull<()>, dst: NonNull<()>),
+  layout: Layout,
+}
+
+impl Drop for MetaclassData {
+  fn drop(&mut self) {
+    // SAFETY: `MetaclassData` is only ever constructed by `Metaclass` with
+    //         matching pointers
+    unsafe { dealloc(self.ptr.as_ptr().cast(), self.layout) };
+  }
+}
+
+impl<T> Metaclass<T> {
+  pub fn new<'a>(
+    py: Python<'_>,
+    name: impl Into<Cow<'a, str>>,
+  ) -> PyResult<Self> {
+    // SAFETY: the builder will set it later using the `MetaclassWithData`
+    let mut builder = unsafe { PyTypeBuilder::<()>::new_without_new_fn(name) };
+    builder.bases.push(RuntimeTypeObject::type_object(py));
+    builder.flags |= Py_TPFLAGS_TYPE_SUBCLASS;
+    let ty = builder.build(py)?;
+    Ok(Self {
+      py_type: ty.unbind(),
+      _marker: PhantomData,
+    })
+  }
+
+  pub fn builder<'a, 'py, U>(
+    &self,
+    py: Python<'py>,
+    name: impl Into<Cow<'a, str>>,
+    data: T,
+    new_fn: Box<NewFn<U>>,
+  ) -> PyTypeBuilder<'py, 'a, U> {
+    let mut builder = PyTypeBuilder::new(name, new_fn);
+    builder.metaclass = Some(MetaclassWithData {
+      py_type: self.py_type.bind(py).clone(),
+      data: (mem::size_of::<T>() > 0).then(|| MetaclassData {
+        ptr: NonNull::new(Box::into_raw(Box::new(data))).unwrap().cast(),
+        // SAFETY: caller will uphold requirements
+        mover: |src, dst| unsafe {
+          src.cast::<T>().copy_to_nonoverlapping(dst.cast(), 1);
+        },
+        layout: Layout::new::<T>(),
+      }),
+    });
+    builder
+  }
+
+  /// # Safety
+  /// The type object must not be instantiated
+  pub unsafe fn as_type_obj<'py>(&self, py: Python<'py>) -> Bound<'py, PyType> {
+    self.py_type.bind(py).clone()
+  }
+}

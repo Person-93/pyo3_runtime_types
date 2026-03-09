@@ -45,7 +45,9 @@ pub(crate) unsafe fn drop_type_data<T>(obj: Borrowed<'_, '_, PyAny>) {
 
 /// Helper function to get a pointer to an object's type data
 #[expect(clippy::disallowed_methods, reason = "implementing safe wrapper")]
-fn type_data_ptr<T>(obj: Borrowed<'_, '_, PyAny>) -> Option<NonNull<T>> {
+pub(crate) fn type_data_ptr<T>(
+  obj: Borrowed<'_, '_, PyAny>,
+) -> Option<NonNull<T>> {
   use pyo3::ffi::PyObject_GetTypeData;
   let ty = obj.get_type();
   // SAFETY: calling python API with pointers from pyo3
