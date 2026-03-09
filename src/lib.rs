@@ -164,7 +164,6 @@ impl MetaClass {
       ptr::addr_of_mut!((*slf.as_ptr()).init_fn)
         .write(init_fn.map(|f| NonNull::new_unchecked(f as *mut ())));
     }
-    println!("setup wrote new_fn={new_fn:p} to type object {slf:p}");
   }
 
   /// # Safety
@@ -172,6 +171,13 @@ impl MetaClass {
   unsafe fn get<'a>(ty: Borrowed<'a, '_, PyType>) -> &'a Self {
     // SAFETY: caller ensures the pointer was written to with a valid instance
     unsafe { &*ty.as_type_ptr().cast() }
+  }
+
+  /// # Safety
+  /// `self` must have been setup with `T`
+  unsafe fn new_fn<T>(&self) -> NewFn<T> {
+    // SAFETY: new_fn is set in `setup` and caller ensures that `T` is correct
+    unsafe { mem::transmute(self.new_fn) }
   }
 }
 
@@ -196,13 +202,8 @@ unsafe extern "C" fn tp_new<T>(
   // SAFETY: caller upholds requirements
   let metaclass = unsafe { MetaClass::get(ty.as_borrowed()) };
 
-  // SAFETY: this is only ever set in `MetaClass::new`
-  let new_fn = unsafe { metaclass.new_fn.cast::<NewFn<T>>().as_ref() };
-
-  println!(
-    "tp_new reading new_fn={new_fn:p} from type object {:p}",
-    ty.as_ptr(),
-  );
+  // SAFETY: `Metaclass::setup` stores this fn's ptr with the correct `T`
+  let new_fn = unsafe { metaclass.new_fn::<T>() };
 
   match new_fn(ty.clone(), args.clone(), kwargs.clone()) {
     Ok(val) => {
