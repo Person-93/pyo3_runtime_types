@@ -1,6 +1,6 @@
 //! This module contains the metaclass for the python types we create.
 
-use std::ffi::{CStr, c_ulong};
+use std::ffi::c_ulong;
 use std::ptr::NonNull;
 use std::{mem, ptr};
 
@@ -8,12 +8,13 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::ffi::{
   Py_TPFLAGS_DEFAULT, Py_TPFLAGS_DISALLOW_INSTANTIATION,
   Py_TPFLAGS_TYPE_SUBCLASS, PyObject, PyObject_HEAD_INIT, PyType_FromMetaclass,
-  PyType_Ready, PyType_Spec, PyTypeObject, PyVarObject, destructor,
+  PyType_Ready, PyTypeObject, PyVarObject, destructor,
 };
 use pyo3::prelude::*;
 use pyo3::type_object::PyTypeInfo;
 use pyo3::types::{PyString, PyType};
 
+use crate::typespec::TypeSpec;
 use crate::{InitFn, NewFn};
 
 pub(crate) struct RuntimeTypeObject {
@@ -102,7 +103,7 @@ impl RuntimeTypeObject {
   /// `spec` must be valid for the python API
   pub(crate) unsafe fn make_type<'py>(
     self,
-    mut spec: PyType_Spec,
+    mut spec: TypeSpec,
     bases: Borrowed<'_, 'py, PyAny>,
     module: Option<Borrowed<'_, 'py, PyModule>>,
   ) -> PyResult<Bound<'py, PyType>> {
@@ -115,7 +116,7 @@ impl RuntimeTypeObject {
       NonNull::new(PyType_FromMetaclass(
         Self::type_object_raw(py),
         module.map(Borrowed::as_ptr).unwrap_or_default(),
-        &raw mut spec,
+        spec.finish(),
         bases.as_ptr(),
       ))
     }) else {
@@ -128,8 +129,7 @@ impl RuntimeTypeObject {
     RuntimeTypeWithBase::setup(ty.as_borrowed(), self);
 
     if let Some(module) = module {
-      // SAFETY: caller guarantees that `spec` is valid
-      module.add(unsafe { CStr::from_ptr(spec.name) }, &ty)?;
+      module.add(spec.name(), &ty)?;
     }
 
     Ok(ty)

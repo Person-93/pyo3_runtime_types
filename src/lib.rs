@@ -1,20 +1,21 @@
 use std::borrow::Cow;
 use std::ffi::{CString, c_ulong, c_void};
 use std::mem;
-use std::ptr;
 
 use pyo3::PyTypeInfo as _;
 use pyo3::ffi::{
   Py_TPFLAGS_DEFAULT, Py_TPFLAGS_HEAPTYPE, Py_tp_finalize, Py_tp_init,
-  Py_tp_new, PyType_Slot, PyType_Spec, destructor, initproc, newfunc,
+  Py_tp_new, destructor, initproc, newfunc,
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple, PyType};
 
 use self::typeobject::RuntimeTypeObject;
+use self::typespec::TypeSpec;
 
 mod tp;
 mod typeobject;
+mod typespec;
 
 pub struct Builder<'py, 'n, T> {
   flags: c_ulong,
@@ -61,21 +62,7 @@ impl<'py, 'n, T> Builder<'py, 'n, T> {
   }
 
   pub fn build(self, py: Python<'py>) -> PyResult<Bound<'py, PyType>> {
-    let name = match &self.module {
-      Some(module) => {
-        CString::new(format!("{}.{}", module.name()?.to_str()?, self.name))
-          .unwrap()
-      },
-      None => CString::new(self.name.as_bytes()).unwrap(),
-    };
-    let mut slots = self.slots();
-    let spec = PyType_Spec {
-      name: name.as_ptr(),
-      basicsize: -i32::try_from(mem::size_of::<T>()).unwrap(),
-      itemsize: 0,
-      flags: self.flags as _,
-      slots: slots.as_mut_ptr(),
-    };
+    let spec = self.spec()?;
 
     let bases = if self.bases.is_empty() {
       PyAny::type_object(py).into_any()
@@ -91,26 +78,34 @@ impl<'py, 'n, T> Builder<'py, 'n, T> {
     unsafe { rtt.make_type(spec, bases.as_borrowed(), module) }
   }
 
-  fn slots(&self) -> Vec<PyType_Slot> {
-    let mut slots = vec![PyType_Slot {
-      slot: Py_tp_new,
-      pfunc: tp::new::<T> as newfunc as *mut c_void,
-    }];
+  fn spec(&self) -> PyResult<TypeSpec> {
+    let name = match &self.module {
+      Some(module) => {
+        CString::new(format!("{}.{}", module.name()?.to_str()?, self.name))
+          .unwrap()
+      },
+      None => CString::new(self.name.as_bytes()).unwrap(),
+    };
+
+    let mut spec = TypeSpec::new(
+      name,
+      -i32::try_from(mem::size_of::<T>()).unwrap(),
+      0,
+      self.flags as _,
+    );
+
+    spec.push_slot(Py_tp_new, tp::new::<T> as newfunc as *mut c_void);
     if mem::needs_drop::<T>() {
-      slots.push(PyType_Slot {
-        slot: Py_tp_finalize,
-        pfunc: tp::finalize::<T> as destructor as *mut c_void,
-      });
+      spec.push_slot(
+        Py_tp_finalize,
+        tp::finalize::<T> as destructor as *mut c_void,
+      );
     }
     if self.init_fn.is_some() {
-      slots.push(PyType_Slot {
-        slot: Py_tp_init,
-        pfunc: tp::init::<T> as initproc as *mut c_void,
-      });
+      spec.push_slot(Py_tp_init, tp::init::<T> as initproc as *mut c_void);
     }
 
-    slots.push(PyType_Slot { slot: 0, pfunc: ptr::null_mut() });
-    slots
+    Ok(spec)
   }
 }
 

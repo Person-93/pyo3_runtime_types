@@ -1,3 +1,8 @@
 allow-mixed-uninlined-format-args = false
 avoid-breaking-exported-api = false
 excessive-nesting-threshold = 8
+
+[[disallowed-types]]
+path = "pyo3::ffi::PyType_Spec"
+reason = "use safe wrapper instead"
+replacement = "crate::typespec::TypeSpec"
