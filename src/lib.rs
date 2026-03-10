@@ -223,3 +223,17 @@ impl<T> Metaclass<T> {
     self.py_type.bind(py).clone()
   }
 }
+
+/// Run arbitrary code while preserving the exception state. Any exceptions
+/// raised in the closure will be written to Python's unraisable hook.
+fn no_exceptions<R>(py: Python<'_>, f: impl FnOnce() -> R) -> R {
+  let exc = PyErr::take(py);
+  let r = f();
+  if let Some(new_exc) = PyErr::take(py) {
+    new_exc.write_unraisable(py, None);
+  }
+  if let Some(exc) = exc {
+    exc.restore(py);
+  }
+  r
+}

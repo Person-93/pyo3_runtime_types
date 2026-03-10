@@ -16,6 +16,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyString, PyTuple, PyType};
 
 use crate::data_ptr::{drop_type_data, set_type_data, type_data};
+use crate::no_exceptions;
 use crate::typeobject::RuntimeTypeObject;
 
 /// # Safety
@@ -135,41 +136,42 @@ pub(crate) unsafe extern "C" fn init<T>(
 }
 
 /// # Safety
-/// The `obj` must have been created with [`new`]
-#[expect(unsafe_op_in_unsafe_fn, reason = "this is basically writing C")]
+/// The `obj` must have been created with [`new`] and python must be in
+/// attached state
 pub(crate) unsafe extern "C" fn dealloc<T>(obj: *mut PyObject) {
-  let py = Python::assume_attached();
-  let exc = PyErr::take(py);
-  let obj = Borrowed::from_ptr(py, obj);
-  let ty = obj.get_type();
+  // SAFETY: caller upholds rquirements
+  let py = unsafe { Python::assume_attached() };
+  no_exceptions(py, || {
+    // SAFETY: python does not call dealloc with null ptr
+    let obj = unsafe { Borrowed::from_ptr(py, obj) };
+    let ty = obj.get_type();
 
-  if PyObject_CallFinalizerFromDealloc(obj.as_ptr()) < 0 {
-    // obj was resurrected
-    if let Some(exc) = exc {
-      exc.restore(py);
+    // SAFETY: called with ptr received from python
+    if unsafe { PyObject_CallFinalizerFromDealloc(obj.as_ptr()) < 0 } {
+      return;
     }
-    return;
-  }
 
-  let tp = ty.get_type_ptr();
-  let tp_flags = ptr::addr_of!((&*tp).tp_flags).read();
-  #[cfg(Py_GIL_DISABLED)]
-  let tp_flags = tp_flags.load(Ordering::SeqCst);
+    // SAFETY: pyo3 gives us a valid type object
+    let tp_flags =
+      unsafe { ptr::addr_of!((&*ty.get_type_ptr()).tp_flags).read() };
+    #[cfg(Py_GIL_DISABLED)]
+    let tp_flags = tp_flags.load(Ordering::SeqCst);
 
-  if tp_flags & Py_TPFLAGS_HAVE_GC > 0 {
-    PyObject_GC_UnTrack(obj.as_ptr().cast());
-  }
+    if tp_flags & Py_TPFLAGS_HAVE_GC > 0 {
+      // SAFETY: called with ptr received from python
+      unsafe { PyObject_GC_UnTrack(obj.as_ptr().cast()) };
+    }
 
-  drop_type_data::<T>(obj);
-  // TODO drop any type data(s) from base classes
+    // SAFETY: the type builder ensures this is the correct `T` and it'll never
+    //         be used again becuase we deallocate it below
+    unsafe { drop_type_data::<T>(obj) };
+    // TODO drop any type data(s) from base classes
 
-  let tp_free: destructor = mem::transmute(PyType_GetSlot(tp, Py_tp_free));
-  tp_free(obj.as_ptr());
-
-  if let Some(new_exc) = PyErr::take(py) {
-    new_exc.write_unraisable(py, None);
-  }
-  if let Some(exc) = exc {
-    exc.restore(py);
-  }
+    // SAFETY: calling python api with valid `PyObject` ptr
+    unsafe {
+      let tp_free: destructor =
+        mem::transmute(PyType_GetSlot(ty.as_type_ptr(), Py_tp_free));
+      tp_free(obj.as_ptr());
+    }
+  });
 }
