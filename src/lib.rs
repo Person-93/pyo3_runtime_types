@@ -22,7 +22,7 @@ mod tp;
 mod typeobject;
 mod typespec;
 
-pub struct PyTypeBuilder<'py, 'n, T> {
+pub struct PyTypeBuilder<'py, 'n, T: 'static> {
   flags: c_ulong,
   module: Option<Bound<'py, PyModule>>,
   name: Cow<'n, str>,
@@ -32,12 +32,34 @@ pub struct PyTypeBuilder<'py, 'n, T> {
   init_fn: Option<Box<InitFn<T>>>,
 }
 
-impl<'py, 'n, T> PyTypeBuilder<'py, 'n, T> {
+impl<'n> PyTypeBuilder<'_, 'n, ()> {
+  pub fn new_empty(name: impl Into<Cow<'n, str>>) -> Self {
+    Self::new_without_new_fn(name)
+  }
+}
+
+impl<'py, 'n, T: 'static> PyTypeBuilder<'py, 'n, T> {
   pub fn new(name: impl Into<Cow<'n, str>>, new_fn: Box<NewFn<T>>) -> Self {
     // SAFETY: new_fn is set right after this call
-    let mut this = unsafe { PyTypeBuilder::new_without_new_fn(name) };
+    let mut this = unsafe { PyTypeBuilder::new_without_new_fn_unsafe(name) };
     this.new_fn(new_fn);
     this
+  }
+
+  /// # Panic
+  /// Panics if `T` is not a ZST or if it imeplemnts [`Drop`]
+  pub fn new_without_new_fn(name: impl Into<Cow<'n, str>>) -> Self {
+    assert_eq!(
+      mem::size_of::<T>(),
+      0,
+      "new_without_new_fn can only be called for ZST"
+    );
+    assert!(
+      !mem::needs_drop::<T>(),
+      "new_without_new_fn cannot be called for `Drop` types"
+    );
+    // SAFETY: ZST does not need to be initialized
+    unsafe { Self::new_without_new_fn_unsafe(name) }
   }
 
   /// # Safety
@@ -46,7 +68,9 @@ impl<'py, 'n, T> PyTypeBuilder<'py, 'n, T> {
   /// There are two ways to accomplish this
   /// - set the new_fn by calling [`Self::new_fn`] before [`Self::build`]
   /// - manually set the type data for every instance of the new python type
-  pub unsafe fn new_without_new_fn(name: impl Into<Cow<'n, str>>) -> Self {
+  pub unsafe fn new_without_new_fn_unsafe(
+    name: impl Into<Cow<'n, str>>,
+  ) -> Self {
     PyTypeBuilder {
       flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE),
       module: None,
@@ -155,7 +179,7 @@ pub type InitFn<T> = dyn for<'py> Fn(
   Option<Bound<'py, PyDict>>,
 ) -> PyResult<()>;
 
-pub struct Metaclass<T> {
+pub struct Metaclass<T: 'static> {
   py_type: Py<PyType>,
   _marker: PhantomData<fn() -> T>,
 }
@@ -179,13 +203,12 @@ impl Drop for MetaclassData {
   }
 }
 
-impl<T> Metaclass<T> {
+impl<T: 'static> Metaclass<T> {
   pub fn new<'a>(
     py: Python<'_>,
     name: impl Into<Cow<'a, str>>,
   ) -> PyResult<Self> {
-    // SAFETY: the builder will set it later using the `MetaclassWithData`
-    let mut builder = unsafe { PyTypeBuilder::<()>::new_without_new_fn(name) };
+    let mut builder = PyTypeBuilder::new_empty(name);
     builder.bases.push(RuntimeTypeObject::type_object(py));
     builder.flags |= Py_TPFLAGS_TYPE_SUBCLASS | Py_TPFLAGS_HEAPTYPE;
     let ty = builder.build(py)?;
@@ -195,7 +218,7 @@ impl<T> Metaclass<T> {
     })
   }
 
-  pub fn builder<'a, 'py, U>(
+  pub fn builder<'a, 'py, U: 'static>(
     &self,
     py: Python<'py>,
     name: impl Into<Cow<'a, str>>,

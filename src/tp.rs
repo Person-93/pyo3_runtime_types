@@ -21,7 +21,7 @@ use crate::typeobject::RuntimeTypeObject;
 
 /// # Safety
 /// Must be called in `tp_new` slot of type created with [`RuntimeTypeObject`] as type data
-pub(crate) unsafe extern "C" fn new<T>(
+pub(crate) unsafe extern "C" fn new<T: 'static>(
   ty: *mut PyTypeObject,
   args: *mut PyObject,
   kwargs: *mut PyObject,
@@ -87,7 +87,7 @@ pub(crate) unsafe extern "C" fn new<T>(
 
 /// # Safety
 /// `slf` must have been created with [`new`]
-pub(crate) unsafe extern "C" fn init<T>(
+pub(crate) unsafe extern "C" fn init<T: 'static>(
   slf: *mut PyObject,
   args: *mut PyObject,
   kwargs: *mut PyObject,
@@ -105,7 +105,7 @@ pub(crate) unsafe extern "C" fn init<T>(
     Bound::from_borrowed_ptr_or_opt(py, kwargs).map(|b| b.cast_into_unchecked())
   };
 
-  fn inner<T>(
+  fn inner<T: 'static>(
     slf: Borrowed<'_, '_, PyAny>,
     ty: Borrowed<'_, '_, PyType>,
     args: Bound<'_, PyTuple>,
