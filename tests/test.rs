@@ -12,7 +12,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::PyTypeInfo as _;
 use pyo3::exceptions::PySystemError;
-use pyo3::ffi::PyObject_CallFinalizer;
 use pyo3::prelude::*;
 
 use pyo3::types::PyType;
@@ -77,21 +76,22 @@ fn new_metaclass() {
     let ty = builder.build(py).unwrap();
     let obj = ty.call0().unwrap();
 
-    unsafe {
-      finalize(obj);
-      S::assert_inited_and_finalized();
+    let collect = PyModule::import(py, "gc")
+      .unwrap()
+      .getattr("collect")
+      .unwrap();
 
-      finalize(ty);
-      assert!(DESTROY.with(|b| b.load(Ordering::SeqCst)));
-    }
+    drop(obj);
+    collect.call0().unwrap();
+    S::assert_inited_and_finalized();
+
+    drop(ty);
+    collect.call0().unwrap();
+    assert!(DESTROY.with(|b| b.load(Ordering::SeqCst)));
+
     drop(meta);
+    collect.call0().unwrap();
   });
-}
-
-unsafe fn finalize<T>(obj: Bound<'_, T>) {
-  let p = obj.as_ptr();
-  drop(obj);
-  PyObject_CallFinalizer(p);
 }
 
 thread_local! {
