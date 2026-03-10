@@ -2,10 +2,16 @@
 //! the `PyTypeObject`s.
 
 use std::ffi::c_int;
+use std::mem;
 use std::ptr::{self, NonNull};
+use std::sync::atomic::Ordering;
 
 use pyo3::exceptions::{PySystemError, PyTypeError};
-use pyo3::ffi::{PyObject, PyType_GenericNew, PyTypeObject};
+use pyo3::ffi::{
+  Py_TPFLAGS_HAVE_GC, Py_tp_free, PyObject, PyObject_CallFinalizerFromDealloc,
+  PyObject_GC_UnTrack, PyType_GenericNew, PyType_GetSlot, PyTypeObject,
+  destructor,
+};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyString, PyTuple, PyType};
 
@@ -130,12 +136,40 @@ pub(crate) unsafe extern "C" fn init<T>(
 
 /// # Safety
 /// The `obj` must have been created with [`new`]
-pub(crate) unsafe extern "C" fn finalize<T>(obj: *mut PyObject) {
-  // SAFETY: this function will only be called by python
-  let py = unsafe { Python::assume_attached() };
-  // SAFETY: python just gave this to us and we only use it in the body of this fn
-  let obj = unsafe { Borrowed::from_ptr(py, obj) };
+#[expect(unsafe_op_in_unsafe_fn, reason = "this is basically writing C")]
+pub(crate) unsafe extern "C" fn dealloc<T>(obj: *mut PyObject) {
+  let py = Python::assume_attached();
+  let exc = PyErr::take(py);
+  let obj = Borrowed::from_ptr(py, obj);
+  let ty = obj.get_type();
 
-  // SAFETY: requirements are upheld by caller
-  unsafe { drop_type_data::<T>(obj) };
+  if PyObject_CallFinalizerFromDealloc(obj.as_ptr()) < 0 {
+    // obj was resurrected
+    if let Some(exc) = exc {
+      exc.restore(py);
+    }
+    return;
+  }
+
+  let tp = ty.get_type_ptr();
+  let tp_flags = ptr::addr_of!((&*tp).tp_flags).read();
+  #[cfg(Py_GIL_DISABLED)]
+  let tp_flags = tp_flags.load(Ordering::SeqCst);
+
+  if tp_flags & Py_TPFLAGS_HAVE_GC > 0 {
+    PyObject_GC_UnTrack(obj.as_ptr().cast());
+  }
+
+  drop_type_data::<T>(obj);
+  // TODO drop any type data(s) from base classes
+
+  let tp_free: destructor = mem::transmute(PyType_GetSlot(tp, Py_tp_free));
+  tp_free(obj.as_ptr());
+
+  if let Some(new_exc) = PyErr::take(py) {
+    new_exc.write_unraisable(py, None);
+  }
+  if let Some(exc) = exc {
+    exc.restore(py);
+  }
 }

@@ -9,7 +9,7 @@ use pyo3::PyTypeInfo as _;
 use pyo3::exceptions::PySystemError;
 use pyo3::ffi::{
   Py_TPFLAGS_DEFAULT, Py_TPFLAGS_HEAPTYPE, Py_TPFLAGS_TYPE_SUBCLASS,
-  Py_tp_finalize, Py_tp_init, Py_tp_new, destructor, initproc, newfunc,
+  Py_tp_dealloc, Py_tp_init, Py_tp_new, destructor, initproc, newfunc,
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple, PyType};
@@ -130,8 +130,8 @@ impl<'py, 'n, T> PyTypeBuilder<'py, 'n, T> {
     }
     if mem::needs_drop::<T>() {
       spec.push_slot(
-        Py_tp_finalize,
-        tp::finalize::<T> as destructor as *mut c_void,
+        Py_tp_dealloc,
+        tp::dealloc::<T> as destructor as *mut c_void,
       );
     }
     if self.init_fn.is_some() {
@@ -187,7 +187,7 @@ impl<T> Metaclass<T> {
     // SAFETY: the builder will set it later using the `MetaclassWithData`
     let mut builder = unsafe { PyTypeBuilder::<()>::new_without_new_fn(name) };
     builder.bases.push(RuntimeTypeObject::type_object(py));
-    builder.flags |= Py_TPFLAGS_TYPE_SUBCLASS;
+    builder.flags |= Py_TPFLAGS_TYPE_SUBCLASS | Py_TPFLAGS_HEAPTYPE;
     let ty = builder.build(py)?;
     Ok(Self {
       py_type: ty.unbind(),
