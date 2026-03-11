@@ -17,6 +17,7 @@ use self::typeobject::RuntimeTypeObject;
 use self::typespec::TypeSpec;
 
 mod data_ptr;
+mod ext;
 mod tp;
 mod type_erased;
 mod typeobject;

@@ -8,12 +8,13 @@ use std::ptr::{self, NonNull};
 use pyo3::exceptions::{PySystemError, PyTypeError};
 use pyo3::ffi::{
   Py_tp_free, PyObject, PyObject_CallFinalizerFromDealloc, PyObject_GC_UnTrack,
-  PyType_GenericNew, PyType_GetSlot, PyType_IS_GC, PyTypeObject, destructor,
+  PyType_GenericNew, PyType_GetSlot, PyTypeObject, destructor,
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyString, PyTuple, PyType};
 
 use crate::data_ptr::{drop_type_data, set_type_data, type_data};
+use crate::ext::*;
 use crate::no_exceptions;
 use crate::typeobject::RuntimeTypeObject;
 
@@ -151,7 +152,7 @@ pub(crate) unsafe extern "C" fn dealloc<T: Send + Sync + 'static>(
       return;
     }
 
-    if is_gc(ty.as_borrowed()) {
+    if ty.is_gc() {
       // SAFETY: called with ptr received from python
       unsafe { PyObject_GC_UnTrack(obj.as_ptr().cast()) };
     }
@@ -168,9 +169,4 @@ pub(crate) unsafe extern "C" fn dealloc<T: Send + Sync + 'static>(
       tp_free(obj.as_ptr());
     }
   });
-}
-
-fn is_gc(ty: Borrowed<'_, '_, PyType>) -> bool {
-  // SAFETY: ty holds a pointer to a valid PyTypeObject
-  (unsafe { PyType_IS_GC(ty.as_type_ptr()) }) == 0
 }
