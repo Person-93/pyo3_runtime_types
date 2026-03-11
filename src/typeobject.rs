@@ -145,7 +145,7 @@ impl RuntimeTypeObject {
     if let Some(metaclass_data) = metaclass_data {
       let tp_data = type_data_ptr::<()>(ty.as_any().as_borrowed()).unwrap();
       // SAFETY: caller ensures that the pointers are the same type
-      unsafe { (metaclass_data.mover)(metaclass_data.ptr, tp_data) };
+      unsafe { metaclass_data.move_it(tp_data) };
     }
 
     if let Some(module) = module {

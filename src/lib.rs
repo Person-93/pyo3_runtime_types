@@ -1,9 +1,7 @@
-use std::alloc::{Layout, dealloc};
 use std::borrow::Cow;
 use std::ffi::{CString, c_ulong, c_void};
 use std::marker::PhantomData;
 use std::mem;
-use std::ptr::NonNull;
 
 use pyo3::PyTypeInfo as _;
 use pyo3::exceptions::PySystemError;
@@ -14,11 +12,13 @@ use pyo3::ffi::{
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple, PyType};
 
+use self::type_erased::MovingData;
 use self::typeobject::RuntimeTypeObject;
 use self::typespec::TypeSpec;
 
 mod data_ptr;
 mod tp;
+mod type_erased;
 mod typeobject;
 mod typespec;
 
@@ -186,21 +186,7 @@ pub struct Metaclass<T: 'static> {
 
 struct MetaclassWithData<'py> {
   py_type: Bound<'py, PyType>,
-  data: Option<MetaclassData>,
-}
-
-struct MetaclassData {
-  ptr: NonNull<()>, // TODO store small btye-slice inline
-  mover: unsafe fn(src: NonNull<()>, dst: NonNull<()>),
-  layout: Layout,
-}
-
-impl Drop for MetaclassData {
-  fn drop(&mut self) {
-    // SAFETY: `MetaclassData` is only ever constructed by `Metaclass` with
-    //         matching pointers
-    unsafe { dealloc(self.ptr.as_ptr().cast(), self.layout) };
-  }
+  data: Option<MovingData>,
 }
 
 impl<T: 'static> Metaclass<T> {
@@ -228,14 +214,7 @@ impl<T: 'static> Metaclass<T> {
     let mut builder = PyTypeBuilder::new(name, new_fn);
     builder.metaclass = Some(MetaclassWithData {
       py_type: self.py_type.bind(py).clone(),
-      data: (mem::size_of::<T>() > 0).then(|| MetaclassData {
-        ptr: NonNull::new(Box::into_raw(Box::new(data))).unwrap().cast(),
-        // SAFETY: caller will uphold requirements
-        mover: |src, dst| unsafe {
-          src.cast::<T>().copy_to_nonoverlapping(dst.cast(), 1);
-        },
-        layout: Layout::new::<T>(),
-      }),
+      data: (mem::size_of::<T>() > 0).then(|| MovingData::new(data)),
     });
     builder
   }
