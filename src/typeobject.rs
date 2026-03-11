@@ -11,8 +11,9 @@ use pyo3::ffi::{
   PyType_Ready, PyTypeObject, PyVarObject, destructor,
 };
 use pyo3::prelude::*;
+use pyo3::py_format;
 use pyo3::type_object::PyTypeInfo;
-use pyo3::types::{PyString, PyType};
+use pyo3::types::PyType;
 
 use crate::data_ptr::type_data_ptr;
 use crate::typespec::TypeSpec;
@@ -44,18 +45,15 @@ impl<'a, 'py> FromPyObject<'a, 'py> for &'a RuntimeTypeObject {
       // SAFETY: we just checked if it's the right type
       unsafe { Ok(&*ptr::addr_of!((*with_base).runtime_type)) }
     } else {
-      Err(PyTypeError::new_err(format!(
-        "expected type to be an instance of {} metaclass",
-        RuntimeTypeObject::type_object(obj.py())
-          .name()
-          .unwrap_or_else(|_| PyString::new(
-            obj.py(),
-            #[expect(deprecated, reason = "used as fallback")]
-            {
-              RuntimeTypeObject::NAME
-            }
-          )),
-      )))
+      let py = obj.py();
+      Err(PyTypeError::new_err(
+        py_format!(
+          py,
+          "expected type to be an instance of {} metaclass",
+          RuntimeTypeObject::type_object(py).name()?
+        )?
+        .unbind(),
+      ))
     }
   }
 }

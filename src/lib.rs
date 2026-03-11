@@ -92,7 +92,7 @@ impl<'py, 'n, T: Send + Sync + 'static> PyTypeBuilder<'py, 'n, T> {
       if base.is_subclass(&PyType::type_object(base.py()))? {
         return Err(PySystemError::new_err(
           "pyo3_runtime_type may not use the type builder to extend `type`, \
-            use the `new_metaclass` function if you intend to make a metaclass",
+            use the `Metaclass` rust type if you intend to make a metaclass",
         ));
       }
       self.bases.push(base);
