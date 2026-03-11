@@ -244,5 +244,4 @@ verbose_file_reads = "warn"
 # this lint is still in nursery as of 2025-09-18
 while_float = "warn"
 wildcard_dependencies = "deny"
-wildcard_imports = "warn"
 zero_sized_map_values = "warn"
