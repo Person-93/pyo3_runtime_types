@@ -4,18 +4,11 @@
 use std::ffi::c_int;
 use std::mem;
 use std::ptr::{self, NonNull};
-#[allow(
-  unused_imports,
-  clippy::allow_attributes,
-  reason = "conditional compilation"
-)]
-use std::sync::atomic::Ordering;
 
 use pyo3::exceptions::{PySystemError, PyTypeError};
 use pyo3::ffi::{
-  Py_TPFLAGS_HAVE_GC, Py_tp_free, PyObject, PyObject_CallFinalizerFromDealloc,
-  PyObject_GC_UnTrack, PyType_GenericNew, PyType_GetSlot, PyTypeObject,
-  destructor,
+  Py_tp_free, PyObject, PyObject_CallFinalizerFromDealloc, PyObject_GC_UnTrack,
+  PyType_GenericNew, PyType_GetSlot, PyType_IS_GC, PyTypeObject, destructor,
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyString, PyTuple, PyType};
@@ -158,13 +151,7 @@ pub(crate) unsafe extern "C" fn dealloc<T: Send + Sync + 'static>(
       return;
     }
 
-    // SAFETY: pyo3 gives us a valid type object
-    let tp_flags =
-      unsafe { ptr::addr_of!((&*ty.get_type_ptr()).tp_flags).read() };
-    #[cfg(Py_GIL_DISABLED)]
-    let tp_flags = tp_flags.load(Ordering::SeqCst);
-
-    if tp_flags & Py_TPFLAGS_HAVE_GC > 0 {
+    if is_gc(ty.as_borrowed()) {
       // SAFETY: called with ptr received from python
       unsafe { PyObject_GC_UnTrack(obj.as_ptr().cast()) };
     }
@@ -181,4 +168,9 @@ pub(crate) unsafe extern "C" fn dealloc<T: Send + Sync + 'static>(
       tp_free(obj.as_ptr());
     }
   });
+}
+
+fn is_gc(ty: Borrowed<'_, '_, PyType>) -> bool {
+  // SAFETY: ty holds a pointer to a valid PyTypeObject
+  (unsafe { PyType_IS_GC(ty.as_type_ptr()) }) == 0
 }
