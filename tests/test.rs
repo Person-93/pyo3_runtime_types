@@ -30,9 +30,11 @@ fn obj_created_inited_and_destroyed() {
     builder.init_fn(Box::new(|slf, _, _, _| slf.__init__()));
     let ty = builder.build(py).unwrap();
     let obj = ty.call0().unwrap();
+    eprintln!("deleting obj");
     drop(obj);
     gc_collect_force(py);
 
+    eprintln!("deleting ty");
     drop(ty);
     gc_collect_force(py);
   });
@@ -75,15 +77,18 @@ fn new_metaclass() {
     let ty = builder.build(py).unwrap();
     let obj = ty.call0().unwrap();
 
+    eprintln!("deleting obj");
     drop(obj);
     gc_collect_force(py);
     S::assert_inited_and_finalized();
 
+    eprintln!("deleting ty");
     drop(ty);
     gc_collect_force(py);
     gc_collect_force(py);
     assert!(DESTROY.with(|b| b.load(Ordering::SeqCst)));
 
+    eprintln!("deleting meta");
     drop(meta);
     gc_collect_force(py);
   });
@@ -132,9 +137,9 @@ fn gc_collect_force(py: Python<'_>) {
 }
 
 fn gc_collect(_py: Python<'_>) {
-  println!("running python gc...");
+  eprintln!("running python gc...");
   let count = unsafe { PyGC_Collect() };
-  println!("collected + uncollectable = {count}");
+  eprintln!("collected + uncollectable = {count}");
 }
 
 /// Returns the previous state
