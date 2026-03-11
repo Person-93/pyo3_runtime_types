@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::ffi::{CString, c_ulong, c_void};
+use std::ffi::{CString, c_int, c_ulong, c_void};
 use std::marker::PhantomData;
 use std::mem;
 
@@ -144,7 +144,7 @@ impl<'py, 'n, T: Send + Sync + 'static> PyTypeBuilder<'py, 'n, T> {
 
     let mut spec = TypeSpec::new(
       name,
-      -i32::try_from(mem::size_of::<T>()).unwrap(),
+      -c_int::try_from(mem::size_of::<T>()).unwrap(),
       0,
       self.flags as _,
     );
