@@ -1,5 +1,6 @@
 #![allow(
   unsafe_op_in_unsafe_fn,
+  clippy::disallowed_macros,
   clippy::missing_assert_message,
   clippy::undocumented_unsafe_blocks,
   clippy::unnecessary_wraps,
@@ -7,11 +8,13 @@
   reason = "tests"
 )]
 
+use std::ffi::c_int;
 use std::iter;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::PyTypeInfo as _;
 use pyo3::exceptions::PySystemError;
+use pyo3::ffi::{PyGC_Collect, PyGC_Disable, PyGC_Enable};
 use pyo3::prelude::*;
 
 use pyo3::types::PyType;
@@ -21,20 +24,17 @@ use pyo3_runtime_types::{Metaclass, PyTypeBuilder};
 fn obj_created_inited_and_destroyed() {
   S::clear_flags();
 
-  Python::initialize();
-  Python::attach(|py| {
+  py_wrapper(|py| {
     let mut builder =
       PyTypeBuilder::new("S", Box::new(|_, _, _| Ok(S::default())));
     builder.init_fn(Box::new(|slf, _, _, _| slf.__init__()));
     let ty = builder.build(py).unwrap();
     let obj = ty.call0().unwrap();
     drop(obj);
-    PyModule::import(py, "gc")
-      .unwrap()
-      .getattr("collect")
-      .unwrap()
-      .call0()
-      .unwrap();
+    gc_collect_force(py);
+
+    drop(ty);
+    gc_collect_force(py);
   });
 
   S::assert_inited_and_finalized();
@@ -67,8 +67,7 @@ fn new_metaclass() {
 
   S::clear_flags();
 
-  Python::initialize();
-  Python::attach(|py| {
+  py_wrapper(|py| {
     let meta = Metaclass::new(py, "Meta").unwrap();
     let mut builder =
       meta.builder(py, "S", Meta, Box::new(|_, _, _| Ok(S::default())));
@@ -76,21 +75,17 @@ fn new_metaclass() {
     let ty = builder.build(py).unwrap();
     let obj = ty.call0().unwrap();
 
-    let collect = PyModule::import(py, "gc")
-      .unwrap()
-      .getattr("collect")
-      .unwrap();
-
     drop(obj);
-    collect.call0().unwrap();
+    gc_collect_force(py);
     S::assert_inited_and_finalized();
 
     drop(ty);
-    collect.call0().unwrap();
+    gc_collect_force(py);
+    gc_collect_force(py);
     assert!(DESTROY.with(|b| b.load(Ordering::SeqCst)));
 
     drop(meta);
-    collect.call0().unwrap();
+    gc_collect_force(py);
   });
 }
 
@@ -126,4 +121,47 @@ impl Drop for S {
   fn drop(&mut self) {
     DESTROY.with(|b| b.store(true, Ordering::SeqCst));
   }
+}
+
+fn gc_collect_force(py: Python<'_>) {
+  let previous_state = gc_enable(py);
+  gc_collect(py);
+  if !previous_state.enabled() {
+    gc_disable(py);
+  }
+}
+
+fn gc_collect(_py: Python<'_>) {
+  println!("running python gc...");
+  let count = unsafe { PyGC_Collect() };
+  println!("collected + uncollectable = {count}");
+}
+
+/// Returns the previous state
+fn gc_disable(_py: Python<'_>) -> GcState {
+  GcState(unsafe { PyGC_Disable() })
+}
+
+/// Returns the previous state
+fn gc_enable(_py: Python<'_>) -> GcState {
+  GcState(unsafe { PyGC_Enable() })
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+struct GcState(c_int);
+
+impl GcState {
+  fn enabled(self) -> bool {
+    self.0 == 1
+  }
+}
+
+fn py_wrapper<R>(f: impl for<'py> FnOnce(Python<'py>) -> R) -> R {
+  Python::initialize();
+  Python::attach(|py| {
+    // gc_collect_force(py);
+    gc_disable(py);
+    f(py)
+  })
 }
