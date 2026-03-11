@@ -4,6 +4,11 @@
 use std::ffi::c_int;
 use std::mem;
 use std::ptr::{self, NonNull};
+#[allow(
+  unused_imports,
+  clippy::allow_attributes,
+  reason = "conditional compilation"
+)]
 use std::sync::atomic::Ordering;
 
 use pyo3::exceptions::{PySystemError, PyTypeError};
