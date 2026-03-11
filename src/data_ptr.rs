@@ -7,7 +7,7 @@ use pyo3::types::PyString;
 /// be retreieved from python.
 /// # Safety
 /// The object's type data must be a valid `T`
-pub(crate) unsafe fn type_data<'a, T>(
+pub(crate) unsafe fn type_data<'a, T: Send + Sync + 'static>(
   obj: Borrowed<'a, '_, PyAny>,
 ) -> PyResult<&'a T> {
   type_data_ptr(obj).map_or_else(
@@ -22,7 +22,7 @@ pub(crate) unsafe fn type_data<'a, T>(
 /// # Safety
 /// `obj`'s type data must be able to hold a `T`
 #[must_use]
-pub(crate) unsafe fn set_type_data<T>(
+pub(crate) unsafe fn set_type_data<T: Send + Sync + 'static>(
   obj: Borrowed<'_, '_, PyAny>,
   val: T,
 ) -> bool {
@@ -36,7 +36,9 @@ pub(crate) unsafe fn set_type_data<T>(
 
 /// # Safety
 /// `obj`'s type data must be a valid `T` and it must not be used again
-pub(crate) unsafe fn drop_type_data<T>(obj: Borrowed<'_, '_, PyAny>) {
+pub(crate) unsafe fn drop_type_data<T: Send + Sync + 'static>(
+  obj: Borrowed<'_, '_, PyAny>,
+) {
   if let Some(p) = type_data_ptr::<T>(obj) {
     // SAFETY: the pyobject's type data was created using the `new_fn`
     unsafe { p.drop_in_place() };
@@ -45,7 +47,7 @@ pub(crate) unsafe fn drop_type_data<T>(obj: Borrowed<'_, '_, PyAny>) {
 
 /// Helper function to get a pointer to an object's type data
 #[expect(clippy::disallowed_methods, reason = "implementing safe wrapper")]
-pub(crate) fn type_data_ptr<T>(
+pub(crate) fn type_data_ptr<T: Send + Sync + 'static>(
   obj: Borrowed<'_, '_, PyAny>,
 ) -> Option<NonNull<T>> {
   use pyo3::ffi::PyObject_GetTypeData;

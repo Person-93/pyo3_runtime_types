@@ -22,7 +22,7 @@ mod type_erased;
 mod typeobject;
 mod typespec;
 
-pub struct PyTypeBuilder<'py, 'n, T: 'static> {
+pub struct PyTypeBuilder<'py, 'n, T: Send + Sync + 'static> {
   flags: c_ulong,
   module: Option<Bound<'py, PyModule>>,
   name: Cow<'n, str>,
@@ -38,7 +38,7 @@ impl<'n> PyTypeBuilder<'_, 'n, ()> {
   }
 }
 
-impl<'py, 'n, T: 'static> PyTypeBuilder<'py, 'n, T> {
+impl<'py, 'n, T: Send + Sync + 'static> PyTypeBuilder<'py, 'n, T> {
   pub fn new(name: impl Into<Cow<'n, str>>, new_fn: Box<NewFn<T>>) -> Self {
     // SAFETY: new_fn is set right after this call
     let mut this = unsafe { PyTypeBuilder::new_without_new_fn_unsafe(name) };
@@ -189,7 +189,7 @@ struct MetaclassWithData<'py> {
   data: Option<MovingData>,
 }
 
-impl<T: 'static> Metaclass<T> {
+impl<T: Send + Sync + 'static> Metaclass<T> {
   pub fn new<'a>(
     py: Python<'_>,
     name: impl Into<Cow<'a, str>>,
@@ -204,7 +204,7 @@ impl<T: 'static> Metaclass<T> {
     })
   }
 
-  pub fn builder<'a, 'py, U: 'static>(
+  pub fn builder<'a, 'py, U: Send + Sync + 'static>(
     &self,
     py: Python<'py>,
     name: impl Into<Cow<'a, str>>,

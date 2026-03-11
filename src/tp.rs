@@ -21,7 +21,7 @@ use crate::typeobject::RuntimeTypeObject;
 
 /// # Safety
 /// Must be called in `tp_new` slot of type created with [`RuntimeTypeObject`] as type data
-pub(crate) unsafe extern "C" fn new<T: 'static>(
+pub(crate) unsafe extern "C" fn new<T: Send + Sync + 'static>(
   ty: *mut PyTypeObject,
   args: *mut PyObject,
   kwargs: *mut PyObject,
@@ -87,7 +87,7 @@ pub(crate) unsafe extern "C" fn new<T: 'static>(
 
 /// # Safety
 /// `slf` must have been created with [`new`]
-pub(crate) unsafe extern "C" fn init<T: 'static>(
+pub(crate) unsafe extern "C" fn init<T: Send + Sync + 'static>(
   slf: *mut PyObject,
   args: *mut PyObject,
   kwargs: *mut PyObject,
@@ -105,7 +105,7 @@ pub(crate) unsafe extern "C" fn init<T: 'static>(
     Bound::from_borrowed_ptr_or_opt(py, kwargs).map(|b| b.cast_into_unchecked())
   };
 
-  fn inner<T: 'static>(
+  fn inner<T: Send + Sync + 'static>(
     slf: Borrowed<'_, '_, PyAny>,
     ty: Borrowed<'_, '_, PyType>,
     args: Bound<'_, PyTuple>,
@@ -138,7 +138,9 @@ pub(crate) unsafe extern "C" fn init<T: 'static>(
 /// # Safety
 /// The `obj` must have been created with [`new`] and python must be in
 /// attached state
-pub(crate) unsafe extern "C" fn dealloc<T>(obj: *mut PyObject) {
+pub(crate) unsafe extern "C" fn dealloc<T: Send + Sync + 'static>(
+  obj: *mut PyObject,
+) {
   // SAFETY: caller upholds rquirements
   let py = unsafe { Python::assume_attached() };
   no_exceptions(py, || {
