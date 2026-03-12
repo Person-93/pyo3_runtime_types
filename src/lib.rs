@@ -23,6 +23,10 @@ mod type_erased;
 mod typeobject;
 mod typespec;
 
+pub mod prelude {
+  pub use crate::ext::*;
+}
+
 pub struct PyTypeBuilder<'py, 'n, T: Send + Sync + 'static> {
   flags: c_ulong,
   module: Option<Bound<'py, PyModule>>,

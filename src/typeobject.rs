@@ -1,5 +1,6 @@
 //! This module contains the metaclass for the python types we create.
 
+use std::any::TypeId;
 use std::ffi::c_ulong;
 use std::ptr::NonNull;
 use std::{mem, ptr};
@@ -15,7 +16,7 @@ use pyo3::py_format;
 use pyo3::type_object::PyTypeInfo;
 use pyo3::types::PyType;
 
-use crate::data_ptr::type_data_ptr;
+use crate::data_ptr::{type_data, type_data_ptr};
 use crate::type_erased::ErasedTraitObjects;
 use crate::typespec::TypeSpec;
 use crate::{InitFn, MetaclassWithData, NewFn};
@@ -23,6 +24,7 @@ use crate::{InitFn, MetaclassWithData, NewFn};
 pub(crate) struct RuntimeTypeObject {
   new_fn: ErasedTraitObjects<1>,
   init_fn: ErasedTraitObjects<1>,
+  type_id: TypeId,
 }
 
 // SAFETY: `type_object_raw` always returns the same pointer
@@ -65,6 +67,8 @@ impl RuntimeTypeObject {
     Self {
       new_fn: ErasedTraitObjects::new([new_fn]),
       init_fn: ErasedTraitObjects::new([init_fn]),
+      // data_fn: ErasedTraitObjects::new([Some(data_fn)]),
+      type_id: TypeId::of::<T>(),
     }
   }
 
@@ -137,6 +141,18 @@ impl RuntimeTypeObject {
 
   pub(crate) fn init_fn<T: Send + Sync + 'static>(&self) -> Option<&InitFn<T>> {
     self.init_fn.typed().unwrap().get(0)
+  }
+
+  pub(crate) fn get_data<'a, T: Send + Sync + 'static>(
+    &self,
+    obj: Borrowed<'a, '_, PyAny>,
+  ) -> PyResult<&'a T> {
+    if self.type_id == TypeId::of::<T>() {
+      // SAFETY: we just confirmed that it's the correct type
+      unsafe { type_data(obj) }
+    } else {
+      todo!()
+    }
   }
 }
 
