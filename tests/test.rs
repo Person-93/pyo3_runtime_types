@@ -165,6 +165,12 @@ impl GcState {
 fn py_wrapper<R>(f: impl for<'py> FnOnce(Python<'py>) -> R) -> R {
   Python::initialize();
   Python::attach(|py| {
+    PyModule::import(py, "warnings")
+      .unwrap()
+      .getattr("simplefilter")
+      .unwrap()
+      .call1(("error",))
+      .unwrap();
     gc_collect_force(py);
     gc_disable(py);
     f(py)
