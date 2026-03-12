@@ -165,7 +165,7 @@ impl GcState {
 fn py_wrapper<R>(f: impl for<'py> FnOnce(Python<'py>) -> R) -> R {
   Python::initialize();
   Python::attach(|py| {
-    // gc_collect_force(py);
+    gc_collect_force(py);
     gc_disable(py);
     f(py)
   })
