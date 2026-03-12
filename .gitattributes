@@ -1,0 +1,16 @@
+*          text=auto
+
+# python files
+*.py       text diff=python
+
+# rust files
+*.rs       text diff=rust
+*.toml     text diff=toml
+Cargo.lock text
+
+# text files
+*.md       text diff=markdown linguist-detectable
+*.json     text
+
+# Fix syntax highlighting on GitHub to allow comments
+.vscode/*.json linguist-language=JSON-with-Comments
