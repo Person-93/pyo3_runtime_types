@@ -16,14 +16,13 @@ use pyo3::type_object::PyTypeInfo;
 use pyo3::types::PyType;
 
 use crate::data_ptr::type_data_ptr;
+use crate::type_erased::ErasedTraitObjects;
 use crate::typespec::TypeSpec;
 use crate::{InitFn, MetaclassWithData, NewFn};
 
 pub(crate) struct RuntimeTypeObject {
-  new_fn: [*mut (); 2],
-  new_fn_drop: *mut (),
-  init_fn: [*mut (); 2],
-  init_fn_drop: *mut (),
+  new_fn: ErasedTraitObjects<1>,
+  init_fn: ErasedTraitObjects<1>,
 }
 
 // SAFETY: `type_object_raw` always returns the same pointer
@@ -58,49 +57,14 @@ impl<'a, 'py> FromPyObject<'a, 'py> for &'a RuntimeTypeObject {
   }
 }
 
-impl Drop for RuntimeTypeObject {
-  fn drop(&mut self) {
-    // SAFETY: all of these pointers are set in the constructor
-    unsafe {
-      let new_fn_drop =
-        mem::transmute::<*mut (), fn([*mut (); 2])>(self.new_fn_drop);
-      new_fn_drop(self.new_fn);
-
-      let init_fn_drop =
-        mem::transmute::<*mut (), fn([*mut (); 2])>(self.init_fn_drop);
-      init_fn_drop(self.init_fn);
-    }
-  }
-}
-
 impl RuntimeTypeObject {
-  pub(crate) fn new<T>(
+  pub(crate) fn new<T: Send + Sync + 'static>(
     new_fn: Option<Box<NewFn<T>>>,
     init_fn: Option<Box<InitFn<T>>>,
   ) -> Self {
-    fn new_fn_drop<T>(new_fn: [*mut (); 2]) {
-      // SAFETY: undoing transmute below
-      let _ = unsafe {
-        mem::transmute::<[*mut (); 2], Option<Box<NewFn<T>>>>(new_fn)
-      };
-    }
-    fn init_fn_drop<T>(init_fn: [*mut (); 2]) {
-      // SAFETY: undoing transmute below
-      let _ = unsafe {
-        mem::transmute::<[*mut (); 2], Option<Box<InitFn<T>>>>(init_fn)
-      };
-    }
-
-    // SAFETY: these function pointers will only be accessed from the getter functions
-    unsafe {
-      Self {
-        new_fn: mem::transmute::<Option<Box<NewFn<T>>>, [*mut (); 2]>(new_fn),
-        new_fn_drop: new_fn_drop::<T> as *mut (),
-        init_fn: mem::transmute::<Option<Box<InitFn<T>>>, [*mut (); 2]>(
-          init_fn,
-        ),
-        init_fn_drop: init_fn_drop::<T> as *mut (),
-      }
+    Self {
+      new_fn: ErasedTraitObjects::new([new_fn]),
+      init_fn: ErasedTraitObjects::new([init_fn]),
     }
   }
 
@@ -167,20 +131,12 @@ impl RuntimeTypeObject {
     }
   }
 
-  /// # Safety
-  /// `self` must have been constructed as `T`
-  pub(crate) unsafe fn new_fn<T>(&self) -> Option<&NewFn<T>> {
-    // SAFETY: new_fn is set in `new` and caller ensures that `T` is correct
-    unsafe { &*(&raw const self.new_fn as *const Option<Box<NewFn<T>>>) }
-      .as_deref()
+  pub(crate) fn new_fn<T: Send + Sync + 'static>(&self) -> Option<&NewFn<T>> {
+    self.new_fn.typed().unwrap().get(0)
   }
 
-  /// # Safety
-  /// `self` must have been constructed as `T`
-  pub(crate) unsafe fn init_fn<T>(&self) -> Option<&InitFn<T>> {
-    // SAFETY: init_fn is set in `new` and caller ensures that `T` is correct
-    unsafe { &*(&raw const self.init_fn as *const Option<Box<InitFn<T>>>) }
-      .as_deref()
+  pub(crate) fn init_fn<T: Send + Sync + 'static>(&self) -> Option<&InitFn<T>> {
+    self.init_fn.typed().unwrap().get(0)
   }
 }
 

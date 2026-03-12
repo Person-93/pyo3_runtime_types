@@ -44,8 +44,7 @@ pub(crate) unsafe extern "C" fn new<T: Send + Sync + 'static>(
     },
   };
 
-  // SAFETY: `RuntimeTypeObject::new` stores this fn's ptr with the correct `T`
-  let Some(new_fn) = (unsafe { rtt.new_fn::<T>() }) else {
+  let Some(new_fn) = rtt.new_fn::<T>() else {
     PyTypeError::new_err(format!(
       "could not get __new__ fn for <{}>: {}",
       ty.name().unwrap_or_else(|_| PyString::new(py, "<unknown>")),
@@ -111,8 +110,7 @@ pub(crate) unsafe extern "C" fn init<T: Send + Sync + 'static>(
     kwargs: Option<Bound<'_, PyDict>>,
   ) -> PyResult<()> {
     let rtt: &RuntimeTypeObject = ty.extract()?;
-    // SAFETY: `RuntimeTypeObject::new` stores this fn's ptr with the correct `T`
-    let init_fn = unsafe { rtt.init_fn::<T>() }.ok_or_else(|| {
+    let init_fn = rtt.init_fn::<T>().ok_or_else(|| {
       PySystemError::new_err(format!(
         "could not get init fn for <{}>: {}",
         ty.qualname()

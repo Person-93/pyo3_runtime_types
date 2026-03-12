@@ -168,19 +168,25 @@ impl<'py, 'n, T: Send + Sync + 'static> PyTypeBuilder<'py, 'n, T> {
 }
 
 pub type NewFn<T> = dyn for<'py> Fn(
-  Bound<'py, PyType>,
-  Bound<'py, PyTuple>,
-  Option<Bound<'py, PyDict>>,
-) -> PyResult<T>;
+    Bound<'py, PyType>,
+    Bound<'py, PyTuple>,
+    Option<Bound<'py, PyDict>>,
+  ) -> PyResult<T>
+  + Send
+  + Sync
+  + 'static;
 
 pub type InitFn<T> = dyn for<'py> Fn(
-  &T,
-  Bound<'py, PyType>,
-  Bound<'py, PyTuple>,
-  Option<Bound<'py, PyDict>>,
-) -> PyResult<()>;
+    &T,
+    Bound<'py, PyType>,
+    Bound<'py, PyTuple>,
+    Option<Bound<'py, PyDict>>,
+  ) -> PyResult<()>
+  + Send
+  + Sync
+  + 'static;
 
-pub struct Metaclass<T: 'static> {
+pub struct Metaclass<T: Send + Sync + 'static> {
   py_type: Py<PyType>,
   _marker: PhantomData<fn() -> T>,
 }
