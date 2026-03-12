@@ -29,7 +29,7 @@ pub(crate) struct RuntimeTypeObject {
 // SAFETY: `type_object_raw` always returns the same pointer
 unsafe impl PyTypeInfo for RuntimeTypeObject {
   const NAME: &str = "pyo3_runtime_type";
-  const MODULE: Option<&str> = None;
+  const MODULE: Option<&str> = Some("__hidden__");
 
   fn type_object_raw(_py: Python<'_>) -> *mut PyTypeObject {
     &raw mut RUNTIME_TYPE_TYPE
@@ -105,8 +105,8 @@ impl RuntimeTypeObject {
   }
 
   /// # Safety
-  /// `spec` must be valid for the python API and `metaclass` must have been
-  /// constructed with the rust type for the type's type-data
+  /// - The `spec` must be valid for the `T` that `self` was contructed with.
+  /// - The `metaclass` must hold an instance of the `T` that `self` was constructed with.
   pub(crate) unsafe fn make_type<'py>(
     self,
     metaclass: Option<MetaclassWithData>,
@@ -123,12 +123,17 @@ impl RuntimeTypeObject {
       |mc| (mc.py_type, mc.data),
     );
 
+    let internal_module = match module {
+      Some(module) => module.to_owned(),
+      None => PyModule::new(py, "__hidden__")?,
+    };
+
     // SAFETY: all the pointers refer to objects in this scope
     let Some(ty) = (unsafe {
       NonNull::new(PyType_FromMetaclass(
         metaclass.as_type_ptr(),
-        module.map(Borrowed::as_ptr).unwrap_or_default(),
-        spec.finish(),
+        internal_module.as_ptr(),
+        spec.finish(internal_module.name()?.to_str()?),
         bases.as_ptr(),
       ))
     }) else {
@@ -211,7 +216,7 @@ impl RuntimeTypeWithBase {
 }
 
 static mut RUNTIME_TYPE_TYPE: PyTypeObject = PyTypeObject {
-  tp_name: c"pyo3_runtime_type".as_ptr(),
+  tp_name: c"__hidden__.pyo3_runtime_type".as_ptr(),
   tp_base: &raw mut pyo3::ffi::PyType_Type,
   tp_finalize: Some(RuntimeTypeWithBase::destroy as destructor),
   tp_basicsize: mem::size_of::<RuntimeTypeWithBase>() as pyo3::ffi::Py_ssize_t,

@@ -2,7 +2,7 @@
 #![expect(clippy::disallowed_types, reason = "implementing replacement")]
 
 use std::ffi::{CStr, CString, c_int, c_uint, c_void};
-use std::ptr;
+use std::{mem, ptr};
 
 use pyo3::ffi::{PyType_Slot, PyType_Spec};
 
@@ -40,7 +40,12 @@ impl TypeSpec {
     self.slots.push(PyType_Slot { slot, pfunc });
   }
 
-  pub(crate) fn finish(&mut self) -> &mut PyType_Spec {
+  pub(crate) fn finish(&mut self, module: &str) -> &mut PyType_Spec {
+    let mut name = String::try_from(mem::take(&mut self.name)).unwrap();
+    name.insert(0, '.');
+    name.insert_str(0, module);
+    self.name = CString::new(name).unwrap();
+
     self
       .slots
       .push(PyType_Slot { slot: 0, pfunc: ptr::null_mut() });
