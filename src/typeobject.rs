@@ -218,7 +218,7 @@ impl RuntimeTypeWithBase {
 static mut RUNTIME_TYPE_TYPE: PyTypeObject = PyTypeObject {
   tp_name: c"__hidden__.pyo3_runtime_type".as_ptr(),
   tp_base: &raw mut pyo3::ffi::PyType_Type,
-  tp_finalize: Some(RuntimeTypeWithBase::destroy as destructor),
+  tp_dealloc: Some(RuntimeTypeWithBase::destroy as destructor),
   tp_basicsize: mem::size_of::<RuntimeTypeWithBase>() as pyo3::ffi::Py_ssize_t,
   tp_itemsize: 1,
   #[cfg(not(Py_GIL_DISABLED))]
