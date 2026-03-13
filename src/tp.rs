@@ -94,7 +94,7 @@ pub(crate) unsafe extern "C" fn init<T: Send + Sync + 'static>(
   let py = unsafe { Python::assume_attached() };
   // SAFETY: python doesn't give null self
   let slf = unsafe { Bound::from_borrowed_ptr(py, slf) };
-  let ty = slf.get_type();
+  let ty = slf.get_type_borrowed();
   // SAFETY: python always gives args as non-null PyTuple
   let args: Bound<'_, PyTuple> =
     unsafe { Bound::from_borrowed_ptr(py, args).cast_into_unchecked() };
@@ -143,7 +143,7 @@ pub(crate) unsafe extern "C" fn dealloc<T: Send + Sync + 'static>(
   no_exceptions(py, || {
     // SAFETY: python does not call dealloc with null ptr
     let obj = unsafe { Borrowed::from_ptr(py, obj) };
-    let ty = obj.get_type();
+    let ty = obj.get_type_borrowed();
 
     // SAFETY: called with ptr received from python
     if unsafe { PyObject_CallFinalizerFromDealloc(obj.as_ptr()) < 0 } {
