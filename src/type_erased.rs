@@ -53,7 +53,7 @@ impl Drop for MovingData {
 #[repr(C)]
 pub(crate) struct ErasedTraitObjects<const N: usize> {
   objects: [[*mut (); 2]; N],
-  dropper: fn([*mut (); 2]),
+  dropper: unsafe fn([*mut (); 2]),
   type_id: TypeId,
 }
 
@@ -97,7 +97,11 @@ impl<const N: usize> ErasedTraitObjects<N> {
 impl<const N: usize> Drop for ErasedTraitObjects<N> {
   fn drop(&mut self) {
     for obj in self.objects {
-      (self.dropper)(obj);
+      if obj != [ptr::null_mut(); 2] {
+        // SAFETY: the constructor ensures it's the correct type and we just
+        //         checked for null
+        unsafe { (self.dropper)(obj) };
+      }
     }
   }
 }
