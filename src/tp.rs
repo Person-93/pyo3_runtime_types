@@ -131,6 +131,53 @@ pub(crate) unsafe extern "C" fn init<T: Send + Sync + 'static>(
   }
 }
 
+pub(crate) unsafe extern "C" fn call<T: Send + Sync + 'static>(
+  slf: *mut PyObject,
+  args: *mut PyObject,
+  kwargs: *mut PyObject,
+) -> *mut PyObject {
+  // SAFETY: caller ensures this function is only called by python runtime
+  let py = unsafe { Python::assume_attached() };
+  // SAFETY: python doesn't give null self
+  let slf = unsafe { Bound::from_borrowed_ptr(py, slf) };
+  let ty = slf.get_type_borrowed();
+  // SAFETY: python always gives args as non-null PyTuple
+  let args: Bound<'_, PyTuple> =
+    unsafe { Bound::from_borrowed_ptr(py, args).cast_into_unchecked() };
+  // SAFETY: python gives kwargs as PyDict and we check for null
+  let kwargs: Option<Bound<'_, PyDict>> = unsafe {
+    Bound::from_borrowed_ptr_or_opt(py, kwargs).map(|b| b.cast_into_unchecked())
+  };
+
+  fn inner<'py, T: Send + Sync + 'static>(
+    slf: Borrowed<'_, 'py, PyAny>,
+    ty: Borrowed<'_, 'py, PyType>,
+    args: Bound<'py, PyTuple>,
+    kwargs: Option<Bound<'py, PyDict>>,
+  ) -> PyResult<Bound<'py, PyAny>> {
+    let rtt: &RuntimeTypeObject = ty.extract()?;
+    let call_fn = rtt.call_fn::<T>().ok_or_else(|| {
+      PySystemError::new_err(format!(
+        "could not get __call__ fn for <{}>: {}",
+        ty.qualname()
+          .unwrap_or_else(|_| PyString::new(ty.py(), "<unknown>")),
+        core::any::type_name::<T>()
+      ))
+    })?;
+    // SAFETY: python will only call this function after `tp_new` runs
+    let t = unsafe { type_data(slf.as_borrowed()) }?;
+    call_fn(t, ty.to_owned(), args, kwargs)
+  }
+
+  match inner::<T>(slf.as_borrowed(), ty.as_borrowed(), args, kwargs) {
+    Ok(obj) => obj.into_ptr(),
+    Err(err) => {
+      err.restore(py);
+      ptr::null_mut()
+    },
+  }
+}
+
 pub(crate) unsafe extern "C" fn traverse(
   obj: *mut PyObject,
   visit: visitproc,

@@ -2,9 +2,9 @@
 
 use std::any::TypeId;
 use std::ffi::c_ulong;
-use std::ptr::NonNull;
+use std::mem;
+use std::ptr::{self, NonNull};
 use std::sync::OnceLock;
-use std::{mem, ptr};
 
 use pyo3::exceptions::PyTypeError;
 use pyo3::ffi::{
@@ -23,11 +23,12 @@ use pyo3::types::PyType;
 use crate::data_ptr::{type_data, type_data_ptr};
 use crate::type_erased::ErasedTraitObjects;
 use crate::typespec::TypeSpec;
-use crate::{InitFn, MetaclassWithData, NewFn};
+use crate::{CallFn, InitFn, MetaclassWithData, NewFn};
 
 pub(crate) struct RuntimeTypeObject {
   new_fn: ErasedTraitObjects<1>,
   init_fn: ErasedTraitObjects<1>,
+  call_fn: ErasedTraitObjects<1>,
   type_id: TypeId,
 }
 
@@ -67,11 +68,12 @@ impl RuntimeTypeObject {
   pub(crate) fn new<T: Send + Sync + 'static>(
     new_fn: Option<Box<NewFn<T>>>,
     init_fn: Option<Box<InitFn<T>>>,
+    call_fn: Option<Box<CallFn<T>>>,
   ) -> Self {
     Self {
       new_fn: ErasedTraitObjects::new([new_fn]),
       init_fn: ErasedTraitObjects::new([init_fn]),
-      // data_fn: ErasedTraitObjects::new([Some(data_fn)]),
+      call_fn: ErasedTraitObjects::new([call_fn]),
       type_id: TypeId::of::<T>(),
     }
   }
@@ -136,6 +138,10 @@ impl RuntimeTypeObject {
 
   pub(crate) fn init_fn<T: Send + Sync + 'static>(&self) -> Option<&InitFn<T>> {
     self.init_fn.typed().unwrap().get(0)
+  }
+
+  pub(crate) fn call_fn<T: Send + Sync + 'static>(&self) -> Option<&CallFn<T>> {
+    self.call_fn.typed().unwrap().get(0)
   }
 
   pub(crate) fn get_data<'a, T: Send + Sync + 'static>(

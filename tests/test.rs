@@ -13,13 +13,13 @@ use std::iter;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use pyo3::PyTypeInfo as _;
 use pyo3::exceptions::PySystemError;
 use pyo3::ffi::{
   PyGC_Collect, PyGC_Disable, PyGC_Enable, PyObject_GC_IsTracked,
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyCFunction, PyType, PyWeakrefReference};
+use pyo3::{IntoPyObjectExt as _, PyTypeInfo as _};
 use pyo3_runtime_types::{Metaclass, PyTypeBuilder};
 
 #[test]
@@ -145,6 +145,21 @@ fn types_are_gc_collected() {
       drop(meta);
       meta_gc_check.assert_garbage_collected();
     }
+  });
+}
+
+#[test]
+fn call() {
+  py_wrapper(|py, module| {
+    let mut builder =
+      PyTypeBuilder::new("Callee", module, Box::new(|_, _, _| Ok(21))).unwrap();
+    builder
+      .call_fn(Box::new(|&n, ty, _, _| (n * 2).into_bound_py_any(ty.py())));
+    let ty = builder.build(py).unwrap();
+    let obj = ty.call0().unwrap();
+    let actual: i32 = obj.call0().unwrap().extract().unwrap();
+    let expected = 42;
+    assert_eq!(actual, expected);
   });
 }
 

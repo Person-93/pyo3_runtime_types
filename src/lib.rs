@@ -9,9 +9,9 @@ use pyo3::PyTypeInfo as _;
 use pyo3::exceptions::PySystemError;
 use pyo3::ffi::{
   Py_TPFLAGS_DEFAULT, Py_TPFLAGS_HAVE_GC, Py_TPFLAGS_HEAPTYPE,
-  Py_TPFLAGS_TYPE_SUBCLASS, Py_tp_clear, Py_tp_dealloc, Py_tp_init, Py_tp_new,
-  Py_tp_traverse, PyTypeObject, destructor, initproc, inquiry, newfunc,
-  traverseproc,
+  Py_TPFLAGS_TYPE_SUBCLASS, Py_tp_call, Py_tp_clear, Py_tp_dealloc, Py_tp_init,
+  Py_tp_new, Py_tp_traverse, PyTypeObject, destructor, initproc, inquiry,
+  newfunc, ternaryfunc, traverseproc,
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple, PyType};
@@ -38,6 +38,7 @@ pub struct PyTypeBuilder<'py, T: Send + Sync + 'static> {
   bases: Vec<Bound<'py, PyType>>,
   new_fn: Option<Box<NewFn<T>>>,
   init_fn: Option<Box<InitFn<T>>>,
+  call_fn: Option<Box<CallFn<T>>>,
   spec: TypeSpec,
 }
 
@@ -106,6 +107,7 @@ impl<'py, T: Send + Sync + 'static> PyTypeBuilder<'py, T> {
       bases: Vec::new(),
       new_fn: None,
       init_fn: None,
+      call_fn: None,
     })
   }
 
@@ -142,6 +144,11 @@ impl<'py, T: Send + Sync + 'static> PyTypeBuilder<'py, T> {
     self
   }
 
+  pub fn call_fn(&mut self, call_fn: Box<CallFn<T>>) -> &mut Self {
+    self.call_fn = Some(call_fn);
+    self
+  }
+
   pub fn build(mut self, py: Python<'py>) -> PyResult<Bound<'py, PyType>> {
     self.build_spec();
 
@@ -152,7 +159,7 @@ impl<'py, T: Send + Sync + 'static> PyTypeBuilder<'py, T> {
       _ => PyTuple::new(py, &bases)?.into_any(),
     };
 
-    let rtt = RuntimeTypeObject::new(self.new_fn, self.init_fn);
+    let rtt = RuntimeTypeObject::new(self.new_fn, self.init_fn, self.call_fn);
 
     // SAFETY: we just created a valid `spec` and all the pointers it
     //         contains point to things still in scope
@@ -190,6 +197,12 @@ impl<'py, T: Send + Sync + 'static> PyTypeBuilder<'py, T> {
       );
     }
 
+    if self.call_fn.is_some() {
+      self
+        .spec
+        .push_slot(Py_tp_call, tp::call::<T> as ternaryfunc as *mut c_void);
+    }
+
     self
       .spec
       .push_slot(Py_tp_traverse, tp::traverse as traverseproc as *mut c_void);
@@ -214,6 +227,16 @@ pub type InitFn<T> = dyn for<'py> Fn(
     Bound<'py, PyTuple>,
     Option<Bound<'py, PyDict>>,
   ) -> PyResult<()>
+  + Send
+  + Sync
+  + 'static;
+
+pub type CallFn<T> = dyn for<'py> Fn(
+    &T,
+    Bound<'py, PyType>,
+    Bound<'py, PyTuple>,
+    Option<Bound<'py, PyDict>>,
+  ) -> PyResult<Bound<'py, PyAny>>
   + Send
   + Sync
   + 'static;
