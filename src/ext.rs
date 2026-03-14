@@ -35,6 +35,7 @@ impl<'py, P: PyTypeInfo> BoundExtInernal<'py> for Bound<'py, P> {
   }
 }
 
+#[allow(unused, clippy::allow_attributes, reason = "useful for tests")]
 pub(crate) trait PyTypeExt<'a>: PyTypeMethods<'a> {
   fn is_gc(&self) -> bool {
     // SAFETY: as_type_ptr returns a pointer to a valid PyTypeObject

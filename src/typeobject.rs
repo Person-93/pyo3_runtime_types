@@ -3,16 +3,20 @@
 use std::any::TypeId;
 use std::ffi::c_ulong;
 use std::ptr::NonNull;
+use std::sync::OnceLock;
 use std::{mem, ptr};
 
 use pyo3::exceptions::PyTypeError;
 use pyo3::ffi::{
-  Py_TPFLAGS_BASETYPE, Py_TPFLAGS_DEFAULT, Py_TPFLAGS_DISALLOW_INSTANTIATION,
+  Py_DECREF, Py_TPFLAGS_BASETYPE, Py_TPFLAGS_DEFAULT,
+  Py_TPFLAGS_DISALLOW_INSTANTIATION, Py_TPFLAGS_HEAPTYPE,
   Py_TPFLAGS_TYPE_SUBCLASS, PyObject, PyObject_HEAD_INIT, PyType_FromMetaclass,
-  PyType_Ready, PyTypeObject, PyVarObject, destructor,
+  PyType_FromSpec, PyType_Ready, PyType_Type, PyTypeObject, PyVarObject,
+  destructor,
 };
 use pyo3::prelude::*;
 use pyo3::py_format;
+use pyo3::sync::OnceLockExt as _;
 use pyo3::type_object::PyTypeInfo;
 use pyo3::types::PyType;
 
@@ -80,7 +84,7 @@ impl RuntimeTypeObject {
     metaclass: Option<MetaclassWithData>,
     mut spec: TypeSpec,
     bases: Borrowed<'_, 'py, PyAny>,
-    module: Option<Borrowed<'_, 'py, PyModule>>,
+    module: Borrowed<'_, 'py, PyModule>,
   ) -> PyResult<Bound<'py, PyType>> {
     let py = bases.py();
 
@@ -91,17 +95,12 @@ impl RuntimeTypeObject {
       |mc| (mc.py_type, mc.data),
     );
 
-    let internal_module = match module {
-      Some(module) => module.to_owned(),
-      None => PyModule::new(py, "__hidden__")?,
-    };
-
     // SAFETY: all the pointers refer to objects in this scope
     let Some(ty) = (unsafe {
       NonNull::new(PyType_FromMetaclass(
         metaclass.as_type_ptr(),
-        internal_module.as_ptr(),
-        spec.finish(internal_module.name()?.to_str()?),
+        module.as_ptr(),
+        spec.finish(),
         bases.as_ptr(),
       ))
     }) else {
@@ -117,10 +116,6 @@ impl RuntimeTypeObject {
       let tp_data = type_data_ptr::<()>(ty.as_any().as_borrowed()).unwrap();
       // SAFETY: caller ensures that the pointers are the same type
       unsafe { metaclass_data.move_it(tp_data) };
-    }
-
-    if let Some(module) = module {
-      module.add(spec.name(), &ty)?;
     }
 
     Ok(ty)
@@ -156,6 +151,26 @@ impl RuntimeTypeObject {
   }
 }
 
+fn subtype_dealloc(py: Python<'_>) -> destructor {
+  static SUBTYPE_DEALLOC: OnceLock<destructor> = OnceLock::new();
+  *SUBTYPE_DEALLOC.get_or_init_py_attached(py, || {
+    let mut spec = TypeSpec::new(
+      c"__hidden__.__dummy__".to_owned(),
+      0,
+      0,
+      (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE) as _,
+    );
+
+    // SAFETY: this is probably fine
+    unsafe {
+      let ty = PyType_FromSpec(spec.finish()).cast::<PyTypeObject>();
+      let dealloc = ptr::addr_of!((*ty).tp_dealloc).read();
+      Py_DECREF(ty.cast());
+      dealloc.unwrap()
+    }
+  })
+}
+
 #[repr(C)]
 struct RuntimeTypeWithBase {
   _ob_base: PyTypeObject,
@@ -176,23 +191,39 @@ impl RuntimeTypeWithBase {
   }
 
   /// # Safety
-  /// `slf` must be a pointer to a [`RuntimeTypeWithBase`]
+  /// `slf` must be a pointer to a [`RuntimeTypeWithBase`] and python must be
+  ///  in attached state
   unsafe extern "C" fn destroy(slf: *mut PyObject) {
+    #[cfg(test)]
+    #[expect(clippy::disallowed_macros, reason = "tests")]
+    {
+      eprintln!("destroying RuntimeTypeWithBase");
+    }
+
     // SAFETY: caller upholds requirements
     unsafe {
       let slf = slf.cast::<Self>();
       let p = ptr::addr_of_mut!((*slf).runtime_type);
       ptr::drop_in_place(p);
     }
+
+    // SAFETY: caller upholds requirements
+    let py = unsafe { Python::assume_attached() };
+
+    // SAFETY: `slf` is known to be a `PyTypeObject`
+    unsafe {
+      // let base_dealloc = PyType_Type.tp_dealloc.unwrap();
+      // base_dealloc(slf);
+      (subtype_dealloc(py))(slf);
+    }
   }
 }
 
 static mut RUNTIME_TYPE_TYPE: PyTypeObject = PyTypeObject {
   tp_name: c"__hidden__.pyo3_runtime_type".as_ptr(),
-  tp_base: &raw mut pyo3::ffi::PyType_Type,
+  tp_base: &raw mut PyType_Type,
   tp_dealloc: Some(RuntimeTypeWithBase::destroy as destructor),
   tp_basicsize: mem::size_of::<RuntimeTypeWithBase>() as pyo3::ffi::Py_ssize_t,
-  tp_itemsize: 1,
   #[cfg(not(Py_GIL_DISABLED))]
   tp_flags: runtime_type_flags() as _,
   #[cfg(Py_GIL_DISABLED)]

@@ -2,14 +2,12 @@
 //! the `PyTypeObject`s.
 
 use std::ffi::{c_int, c_void};
-use std::mem;
 use std::ptr::{self, NonNull};
 
 use pyo3::exceptions::{PySystemError, PyTypeError};
 use pyo3::ffi::{
-  Py_CLEAR, Py_tp_free, PyObject, PyObject_CallFinalizerFromDealloc,
-  PyObject_GC_UnTrack, PyType_GenericNew, PyType_GetSlot, PyTypeObject,
-  destructor, visitproc,
+  Py_CLEAR, PyObject, PyObject_CallFinalizerFromDealloc, PyObject_GC_UnTrack,
+  PyType_GenericNew, PyTypeObject, visitproc,
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyString, PyTuple, PyType};
@@ -175,8 +173,8 @@ pub(crate) unsafe extern "C" fn clear(mut obj: *mut PyObject) -> c_int {
 }
 
 /// # Safety
-/// The `obj` must have been created with [`new`] and python must be in
-/// attached state
+/// The `obj` must have been created with [`new`], python must be in attached
+/// state, and the `obj` must never be used again.
 pub(crate) unsafe extern "C" fn dealloc<T: Send + Sync + 'static>(
   obj: *mut PyObject,
 ) {
@@ -192,21 +190,43 @@ pub(crate) unsafe extern "C" fn dealloc<T: Send + Sync + 'static>(
       return;
     }
 
-    if ty.is_gc() {
-      // SAFETY: called with ptr received from python
-      unsafe { PyObject_GC_UnTrack(obj.as_ptr().cast()) };
+    #[cfg(test)]
+    #[expect(clippy::disallowed_macros, reason = "tests")]
+    {
+      use std::any::type_name;
+      eprintln!(
+        "deallocating a {}: {}, refcnt={}, base={}, metatype={}",
+        ty.qualname().unwrap(),
+        type_name::<T>(),
+        obj.get_refcnt(),
+        ty.bases()
+          .get_item(0)
+          .unwrap()
+          .cast_into::<PyType>()
+          .unwrap()
+          .fully_qualified_name()
+          .unwrap(),
+        ty.get_type().fully_qualified_name().unwrap()
+      );
     }
+
+    // SAFETY: called with ptr received from python
+    unsafe { PyObject_GC_UnTrack(obj.as_ptr().cast()) };
 
     // SAFETY: the type builder ensures this is the correct `T` and it'll never
     //         be used again becuase we deallocate it below
     unsafe { drop_type_data::<T>(obj) };
-    // TODO drop any type data(s) from base classes
 
     // SAFETY: calling python api with valid `PyObject` ptr
     unsafe {
-      let tp_free: destructor =
-        mem::transmute(PyType_GetSlot(ty.as_type_ptr(), Py_tp_free));
-      tp_free(obj.as_ptr());
+      let ty = ty.as_type_ptr();
+      let base = ptr::addr_of!((*ty).tp_base).read();
+      if let Some(base_dealloc) = *ptr::addr_of!((*base).tp_dealloc) {
+        base_dealloc(obj.as_ptr().cast());
+      } else {
+        let free = ptr::addr_of!((*ty).tp_free).read().unwrap();
+        free(obj.as_ptr().cast());
+      }
     }
   });
 }

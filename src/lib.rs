@@ -1,8 +1,7 @@
 #[cfg(not(Py_3_10))]
 compile_error!("min python version: 3.10");
 
-use std::borrow::Cow;
-use std::ffi::{CString, c_int, c_ulong, c_void};
+use std::ffi::{CString, c_int, c_void};
 use std::marker::PhantomData;
 use std::mem;
 
@@ -11,7 +10,8 @@ use pyo3::exceptions::PySystemError;
 use pyo3::ffi::{
   Py_TPFLAGS_DEFAULT, Py_TPFLAGS_HAVE_GC, Py_TPFLAGS_HEAPTYPE,
   Py_TPFLAGS_TYPE_SUBCLASS, Py_tp_clear, Py_tp_dealloc, Py_tp_init, Py_tp_new,
-  Py_tp_traverse, destructor, initproc, inquiry, newfunc, traverseproc,
+  Py_tp_traverse, PyTypeObject, destructor, initproc, inquiry, newfunc,
+  traverseproc,
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple, PyType};
@@ -31,33 +31,41 @@ pub mod prelude {
   pub use crate::ext::*;
 }
 
-pub struct PyTypeBuilder<'py, 'n, T: Send + Sync + 'static> {
-  flags: c_ulong,
-  module: Option<Bound<'py, PyModule>>,
-  name: Cow<'n, str>,
+pub struct PyTypeBuilder<'py, T: Send + Sync + 'static> {
+  module: Bound<'py, PyModule>,
+  add_to_module: bool,
   metaclass: Option<MetaclassWithData<'py>>,
   bases: Vec<Bound<'py, PyType>>,
   new_fn: Option<Box<NewFn<T>>>,
   init_fn: Option<Box<InitFn<T>>>,
+  spec: TypeSpec,
 }
 
-impl<'n> PyTypeBuilder<'_, 'n, ()> {
-  pub fn new_empty(name: impl Into<Cow<'n, str>>) -> Self {
-    Self::new_without_new_fn(name)
+impl<'py> PyTypeBuilder<'py, ()> {
+  pub fn new_empty(name: &str, module: Bound<'py, PyModule>) -> PyResult<Self> {
+    Self::new_without_new_fn(name, module)
   }
 }
 
-impl<'py, 'n, T: Send + Sync + 'static> PyTypeBuilder<'py, 'n, T> {
-  pub fn new(name: impl Into<Cow<'n, str>>, new_fn: Box<NewFn<T>>) -> Self {
+impl<'py, T: Send + Sync + 'static> PyTypeBuilder<'py, T> {
+  pub fn new(
+    name: &str,
+    module: Bound<'py, PyModule>,
+    new_fn: Box<NewFn<T>>,
+  ) -> PyResult<Self> {
     // SAFETY: new_fn is set right after this call
-    let mut this = unsafe { PyTypeBuilder::new_without_new_fn_unsafe(name) };
+    let mut this =
+      unsafe { PyTypeBuilder::new_without_new_fn_unsafe(name, module) }?;
     this.new_fn(new_fn);
-    this
+    Ok(this)
   }
 
   /// # Panic
   /// Panics if `T` is not a ZST or if it imeplemnts [`Drop`]
-  pub fn new_without_new_fn(name: impl Into<Cow<'n, str>>) -> Self {
+  pub fn new_without_new_fn(
+    name: &str,
+    module: Bound<'py, PyModule>,
+  ) -> PyResult<Self> {
     assert_eq!(
       mem::size_of::<T>(),
       0,
@@ -68,7 +76,7 @@ impl<'py, 'n, T: Send + Sync + 'static> PyTypeBuilder<'py, 'n, T> {
       "new_without_new_fn cannot be called for `Drop` types"
     );
     // SAFETY: ZST does not need to be initialized
-    unsafe { Self::new_without_new_fn_unsafe(name) }
+    unsafe { Self::new_without_new_fn_unsafe(name, module) }
   }
 
   /// # Safety
@@ -78,17 +86,32 @@ impl<'py, 'n, T: Send + Sync + 'static> PyTypeBuilder<'py, 'n, T> {
   /// - set the new_fn by calling [`Self::new_fn`] before [`Self::build`]
   /// - manually set the type data for every instance of the new python type
   pub unsafe fn new_without_new_fn_unsafe(
-    name: impl Into<Cow<'n, str>>,
-  ) -> Self {
-    PyTypeBuilder {
-      flags: (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE),
-      module: None,
-      name: name.into(),
+    // name: impl Into<Cow<'n, str>>,
+    name: &str,
+    module: Bound<'py, PyModule>,
+  ) -> PyResult<Self> {
+    let name = format!("{}.{name}", module.name()?.to_str()?);
+    let name = CString::new(name).unwrap();
+
+    Ok(PyTypeBuilder {
+      module,
+      add_to_module: true,
+      spec: TypeSpec::new(
+        name,
+        -c_int::try_from(mem::size_of::<T>()).unwrap(),
+        0,
+        (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC) as _,
+      ),
       metaclass: None,
       bases: Vec::new(),
       new_fn: None,
       init_fn: None,
-    }
+    })
+  }
+
+  pub fn hide_from_module(&mut self, hide: bool) -> &mut Self {
+    self.add_to_module = !hide;
+    self
   }
 
   pub fn bases(
@@ -109,11 +132,6 @@ impl<'py, 'n, T: Send + Sync + 'static> PyTypeBuilder<'py, 'n, T> {
     Ok(self)
   }
 
-  pub fn module(&mut self, module: Bound<'py, PyModule>) -> &mut Self {
-    self.module = Some(module);
-    self
-  }
-
   pub fn new_fn(&mut self, new_fn: Box<NewFn<T>>) -> &mut Self {
     self.new_fn = Some(new_fn);
     self
@@ -124,8 +142,8 @@ impl<'py, 'n, T: Send + Sync + 'static> PyTypeBuilder<'py, 'n, T> {
     self
   }
 
-  pub fn build(self, py: Python<'py>) -> PyResult<Bound<'py, PyType>> {
-    let spec = self.spec()?;
+  pub fn build(mut self, py: Python<'py>) -> PyResult<Bound<'py, PyType>> {
+    self.build_spec();
 
     let mut bases = self.bases;
     let bases = match bases.len() {
@@ -135,46 +153,49 @@ impl<'py, 'n, T: Send + Sync + 'static> PyTypeBuilder<'py, 'n, T> {
     };
 
     let rtt = RuntimeTypeObject::new(self.new_fn, self.init_fn);
-    let module = self.module.as_ref().map(|m| m.as_borrowed());
 
     // SAFETY: we just created a valid `spec` and all the pointers it
     //         contains point to things still in scope
-    unsafe { rtt.make_type(self.metaclass, spec, bases.as_borrowed(), module) }
+    let ty = unsafe {
+      rtt.make_type(
+        self.metaclass,
+        self.spec,
+        bases.as_borrowed(),
+        self.module.as_borrowed(),
+      )
+    }?;
+
+    if self.add_to_module {
+      self.module.add(ty.name()?, &ty)?;
+    }
+
+    Ok(ty)
   }
 
-  fn spec(&self) -> PyResult<TypeSpec> {
-    let name = match &self.module {
-      Some(module) => {
-        CString::new(format!("{}.{}", module.name()?.to_str()?, self.name))
-          .unwrap()
-      },
-      None => CString::new(self.name.as_bytes()).unwrap(),
-    };
-
-    let mut spec = TypeSpec::new(
-      name,
-      -c_int::try_from(mem::size_of::<T>()).unwrap(),
-      0,
-      self.flags as _,
-    );
-
+  fn build_spec(&mut self) {
     if self.new_fn.is_some() {
-      spec.push_slot(Py_tp_new, tp::new::<T> as newfunc as *mut c_void);
+      self
+        .spec
+        .push_slot(Py_tp_new, tp::new::<T> as newfunc as *mut c_void);
+    }
+    if self.init_fn.is_some() {
+      self
+        .spec
+        .push_slot(Py_tp_init, tp::init::<T> as initproc as *mut c_void);
     }
     if mem::needs_drop::<T>() {
-      spec.push_slot(
+      self.spec.push_slot(
         Py_tp_dealloc,
         tp::dealloc::<T> as destructor as *mut c_void,
       );
     }
-    if self.init_fn.is_some() {
-      spec.push_slot(Py_tp_init, tp::init::<T> as initproc as *mut c_void);
-    }
 
-    spec.push_slot(Py_tp_traverse, tp::traverse as traverseproc as *mut c_void);
-    spec.push_slot(Py_tp_clear, tp::clear as inquiry as *mut c_void);
-
-    Ok(spec)
+    self
+      .spec
+      .push_slot(Py_tp_traverse, tp::traverse as traverseproc as *mut c_void);
+    self
+      .spec
+      .push_slot(Py_tp_clear, tp::clear as inquiry as *mut c_void);
   }
 }
 
@@ -208,14 +229,21 @@ struct MetaclassWithData<'py> {
 }
 
 impl<T: Send + Sync + 'static> Metaclass<T> {
-  pub fn new<'a>(
-    py: Python<'_>,
-    name: impl Into<Cow<'a, str>>,
+  pub fn new(
+    name: &str,
+    module: Bound<'_, PyModule>,
+    add_to_module: bool,
   ) -> PyResult<Self> {
-    let mut builder = PyTypeBuilder::new_empty(name);
+    let py = module.py();
+
+    // SAFETY: the `builder` method takes an instance of `T` and uses that
+    let mut builder =
+      unsafe { PyTypeBuilder::<T>::new_without_new_fn_unsafe(name, module) }?;
     builder.bases.push(RuntimeTypeObject::type_object(py));
-    builder.flags |=
-      Py_TPFLAGS_TYPE_SUBCLASS | Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC;
+    builder
+      .spec
+      .add_flags(Py_TPFLAGS_TYPE_SUBCLASS | Py_TPFLAGS_HEAPTYPE);
+    builder.add_to_module = add_to_module;
     let ty = builder.build(py)?;
     Ok(Self {
       py_type: ty.unbind(),
@@ -223,25 +251,42 @@ impl<T: Send + Sync + 'static> Metaclass<T> {
     })
   }
 
-  pub fn builder<'a, 'py, U: Send + Sync + 'static>(
+  pub fn builder<'py, U: Send + Sync + 'static>(
     &self,
-    py: Python<'py>,
-    name: impl Into<Cow<'a, str>>,
+    name: &str,
+    module: Bound<'py, PyModule>,
     data: T,
     new_fn: Box<NewFn<U>>,
-  ) -> PyTypeBuilder<'py, 'a, U> {
-    let mut builder = PyTypeBuilder::new(name, new_fn);
+  ) -> PyResult<PyTypeBuilder<'py, U>> {
+    let py = module.py();
+
+    let mut builder = PyTypeBuilder::new(name, module, new_fn)?;
     builder.metaclass = Some(MetaclassWithData {
       py_type: self.py_type.bind(py).clone(),
       data: (mem::size_of::<T>() > 0).then(|| MovingData::new(data)),
     });
-    builder
+    Ok(builder)
   }
 
   /// # Safety
   /// The type object must not be instantiated
   pub unsafe fn as_type_obj<'py>(&self, py: Python<'py>) -> Bound<'py, PyType> {
     self.py_type.bind(py).clone()
+  }
+
+  /// # Safety
+  /// The type object must not be instantiated
+  pub unsafe fn as_type_obj_borrowed<'py>(
+    &self,
+    py: Python<'py>,
+  ) -> Borrowed<'_, 'py, PyType> {
+    self.py_type.bind_borrowed(py)
+  }
+
+  /// # Safety
+  /// The type object must not be instantiated
+  pub unsafe fn as_type_ptr(&self) -> *mut PyTypeObject {
+    self.py_type.as_ptr().cast()
   }
 }
 
