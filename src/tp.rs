@@ -1,14 +1,15 @@
 //! This module contains functions that will be used to populate the slots of
 //! the `PyTypeObject`s.
 
-use std::ffi::c_int;
+use std::ffi::{c_int, c_void};
 use std::mem;
 use std::ptr::{self, NonNull};
 
 use pyo3::exceptions::{PySystemError, PyTypeError};
 use pyo3::ffi::{
-  Py_tp_free, PyObject, PyObject_CallFinalizerFromDealloc, PyObject_GC_UnTrack,
-  PyType_GenericNew, PyType_GetSlot, PyTypeObject, destructor,
+  Py_CLEAR, Py_tp_free, PyObject, PyObject_CallFinalizerFromDealloc,
+  PyObject_GC_UnTrack, PyType_GenericNew, PyType_GetSlot, PyTypeObject,
+  destructor, visitproc,
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyString, PyTuple, PyType};
@@ -129,6 +130,47 @@ pub(crate) unsafe extern "C" fn init<T: Send + Sync + 'static>(
       err.restore(py);
       -1
     },
+  }
+}
+
+pub(crate) unsafe extern "C" fn traverse(
+  obj: *mut PyObject,
+  visit: visitproc,
+  arg: *mut c_void,
+) -> c_int {
+  // SAFETY: we got these pointers from python
+  unsafe {
+    let ty = ptr::addr_of!((*obj).ob_type).read();
+
+    #[cfg(test)]
+    #[expect(clippy::disallowed_macros, reason = "tests")]
+    {
+      let py = Python::assume_attached();
+      let ty = Borrowed::from_ptr(py, ty.cast()).cast_unchecked::<PyType>();
+      eprintln!(
+        "traversing a {} at {obj:p} with arg {arg:p}",
+        ty.qualname().unwrap(),
+      );
+    }
+
+    visit(ty.cast(), arg)
+  }
+}
+
+pub(crate) unsafe extern "C" fn clear(mut obj: *mut PyObject) -> c_int {
+  // SAFETY: we got these pointers from python
+  unsafe {
+    #[cfg(test)]
+    #[expect(clippy::disallowed_macros, reason = "tests")]
+    {
+      let py = Python::assume_attached();
+      let ty = ptr::addr_of!((*obj).ob_type).read();
+      let ty = Borrowed::from_ptr(py, ty.cast()).cast_unchecked::<PyType>();
+      eprintln!("clearing a {} at {obj:p}", ty.qualname().unwrap(),);
+    }
+
+    Py_CLEAR(&raw mut obj);
+    0
   }
 }
 

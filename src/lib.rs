@@ -9,8 +9,9 @@ use std::mem;
 use pyo3::PyTypeInfo as _;
 use pyo3::exceptions::PySystemError;
 use pyo3::ffi::{
-  Py_TPFLAGS_DEFAULT, Py_TPFLAGS_HEAPTYPE, Py_TPFLAGS_TYPE_SUBCLASS,
-  Py_tp_dealloc, Py_tp_init, Py_tp_new, destructor, initproc, newfunc,
+  Py_TPFLAGS_DEFAULT, Py_TPFLAGS_HAVE_GC, Py_TPFLAGS_HEAPTYPE,
+  Py_TPFLAGS_TYPE_SUBCLASS, Py_tp_clear, Py_tp_dealloc, Py_tp_init, Py_tp_new,
+  Py_tp_traverse, destructor, initproc, inquiry, newfunc, traverseproc,
 };
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyTuple, PyType};
@@ -170,6 +171,9 @@ impl<'py, 'n, T: Send + Sync + 'static> PyTypeBuilder<'py, 'n, T> {
       spec.push_slot(Py_tp_init, tp::init::<T> as initproc as *mut c_void);
     }
 
+    spec.push_slot(Py_tp_traverse, tp::traverse as traverseproc as *mut c_void);
+    spec.push_slot(Py_tp_clear, tp::clear as inquiry as *mut c_void);
+
     Ok(spec)
   }
 }
@@ -210,7 +214,8 @@ impl<T: Send + Sync + 'static> Metaclass<T> {
   ) -> PyResult<Self> {
     let mut builder = PyTypeBuilder::new_empty(name);
     builder.bases.push(RuntimeTypeObject::type_object(py));
-    builder.flags |= Py_TPFLAGS_TYPE_SUBCLASS | Py_TPFLAGS_HEAPTYPE;
+    builder.flags |=
+      Py_TPFLAGS_TYPE_SUBCLASS | Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC;
     let ty = builder.build(py)?;
     Ok(Self {
       py_type: ty.unbind(),
