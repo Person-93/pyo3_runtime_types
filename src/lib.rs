@@ -1,3 +1,6 @@
+#[cfg(not(Py_3_10))]
+compile_error!("min python version: 3.10");
+
 use std::borrow::Cow;
 use std::ffi::{CString, c_int, c_ulong, c_void};
 use std::marker::PhantomData;
