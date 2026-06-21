@@ -17,23 +17,6 @@ pub(crate) unsafe fn type_data<'a, T: Send + Sync + 'static>(
   )
 }
 
-/// Sets the object's type data. Returns true if it succeeds.
-/// If it fails, a python exception will be set.
-/// # Safety
-/// `obj`'s type data must be able to hold a `T`
-#[must_use]
-pub(crate) unsafe fn set_type_data<T: Send + Sync + 'static>(
-  obj: Borrowed<'_, '_, PyAny>,
-  val: T,
-) -> bool {
-  let Some(p) = type_data_ptr::<T>(obj) else {
-    return false;
-  };
-  // SAFETY: caller upholds requirements
-  unsafe { p.write(val) };
-  true
-}
-
 /// # Safety
 /// `obj`'s type data must be a valid `T` and it must not be used again
 pub(crate) unsafe fn drop_type_data<T: Send + Sync + 'static>(

@@ -3,19 +3,23 @@ compile_error!("min python version: 3.10");
 
 use std::ffi::{CString, c_int, c_void};
 use std::marker::PhantomData;
-use std::mem;
+use std::ptr::NonNull;
+use std::sync::OnceLock;
+use std::{iter, mem};
 
 use pyo3::PyTypeInfo as _;
 use pyo3::exceptions::PySystemError;
 use pyo3::ffi::{
   Py_TPFLAGS_DEFAULT, Py_TPFLAGS_HAVE_GC, Py_TPFLAGS_HEAPTYPE,
   Py_TPFLAGS_TYPE_SUBCLASS, Py_tp_call, Py_tp_clear, Py_tp_dealloc, Py_tp_init,
-  Py_tp_new, Py_tp_traverse, PyTypeObject, destructor, initproc, inquiry,
-  newfunc, ternaryfunc, traverseproc,
+  Py_tp_new, Py_tp_traverse, PyObject, PyTypeObject, destructor, initproc,
+  inquiry, newfunc, ternaryfunc, traverseproc,
 };
 use pyo3::prelude::*;
+use pyo3::sync::OnceLockExt as _;
 use pyo3::types::{PyDict, PyTuple, PyType};
 
+use self::drop_guard::DropGuard;
 use self::type_erased::MovingData;
 use self::typeobject::RuntimeTypeObject;
 use self::typespec::TypeSpec;
@@ -35,6 +39,7 @@ pub struct PyTypeBuilder<'py, T: Send + Sync + 'static> {
   module: Bound<'py, PyModule>,
   add_to_module: bool,
   metaclass: Option<MetaclassWithData<'py>>,
+  is_metaclass: bool,
   bases: Vec<Bound<'py, PyType>>,
   new_fn: Option<Box<NewFn<T>>>,
   init_fn: Option<Box<InitFn<T>>>,
@@ -103,6 +108,7 @@ impl<'py, T: Send + Sync + 'static> PyTypeBuilder<'py, T> {
         0,
         (Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HEAPTYPE | Py_TPFLAGS_HAVE_GC) as _,
       ),
+      is_metaclass: false,
       metaclass: None,
       bases: Vec::new(),
       new_fn: None,
@@ -135,7 +141,11 @@ impl<'py, T: Send + Sync + 'static> PyTypeBuilder<'py, T> {
   }
 
   pub fn new_fn(&mut self, new_fn: Box<NewFn<T>>) -> &mut Self {
-    self.new_fn = Some(new_fn);
+    if self.is_metaclass {
+      panic!("metaclass does not accept user-provided new_fn");
+    } else {
+      self.new_fn = Some(new_fn);
+    }
     self
   }
 
@@ -198,9 +208,12 @@ impl<'py, T: Send + Sync + 'static> PyTypeBuilder<'py, T> {
     }
 
     if self.call_fn.is_some() {
+      if self.is_metaclass {
+        todo!("metaclass needs special tp_call that returns an instance")
+      }
       self
         .spec
-        .push_slot(Py_tp_call, tp::call::<T> as ternaryfunc as *mut c_void);
+        .push_slot(Py_tp_call, tp::call as ternaryfunc as *mut c_void);
     }
 
     self
@@ -221,6 +234,16 @@ pub type NewFn<T> = dyn for<'py> Fn(
   + Sync
   + 'static;
 
+type InternalNewFn = dyn for<'py> Fn(
+    NonNull<()>,
+    Bound<'py, PyType>,
+    Bound<'py, PyTuple>,
+    Option<Bound<'py, PyDict>>,
+  ) -> PyResult<()>
+  + Send
+  + Sync
+  + 'static;
+
 pub type InitFn<T> = dyn for<'py> Fn(
     &T,
     Bound<'py, PyType>,
@@ -233,6 +256,16 @@ pub type InitFn<T> = dyn for<'py> Fn(
 
 pub type CallFn<T> = dyn for<'py> Fn(
     &T,
+    Bound<'py, PyType>,
+    Bound<'py, PyTuple>,
+    Option<Bound<'py, PyDict>>,
+  ) -> PyResult<Bound<'py, PyAny>>
+  + Send
+  + Sync
+  + 'static;
+
+type InternalCallFn = dyn for<'py> Fn(
+    NonNull<()>,
     Bound<'py, PyType>,
     Bound<'py, PyTuple>,
     Option<Bound<'py, PyDict>>,
@@ -291,24 +324,18 @@ impl<T: Send + Sync + 'static> Metaclass<T> {
     Ok(builder)
   }
 
-  /// # Safety
-  /// The type object must not be instantiated
-  pub unsafe fn as_type_obj<'py>(&self, py: Python<'py>) -> Bound<'py, PyType> {
+  pub fn as_type_obj<'py>(&self, py: Python<'py>) -> Bound<'py, PyType> {
     self.py_type.bind(py).clone()
   }
 
-  /// # Safety
-  /// The type object must not be instantiated
-  pub unsafe fn as_type_obj_borrowed<'py>(
+  pub fn as_type_obj_borrowed<'py>(
     &self,
     py: Python<'py>,
   ) -> Borrowed<'_, 'py, PyType> {
     self.py_type.bind_borrowed(py)
   }
 
-  /// # Safety
-  /// The type object must not be instantiated
-  pub unsafe fn as_type_ptr(&self) -> *mut PyTypeObject {
+  pub fn as_type_ptr(&self) -> *mut PyTypeObject {
     self.py_type.as_ptr().cast()
   }
 }
@@ -317,12 +344,44 @@ impl<T: Send + Sync + 'static> Metaclass<T> {
 /// raised in the closure will be written to Python's unraisable hook.
 fn no_exceptions<R>(py: Python<'_>, f: impl FnOnce() -> R) -> R {
   let exc = PyErr::take(py);
-  let r = f();
-  if let Some(new_exc) = PyErr::take(py) {
-    new_exc.write_unraisable(py, None);
+  let _guard = DropGuard::new(move || {
+    if let Some(new_exc) = PyErr::take(py) {
+      new_exc.write_unraisable(py, None);
+    }
+    if let Some(exc) = exc {
+      exc.restore(py);
+    }
+  });
+  f()
+}
+
+fn rust_ty_call_token(py: Python<'_>) -> *mut PyObject {
+  static TOKEN: OnceLock<Py<PyTuple>> = OnceLock::new();
+  TOKEN
+    .get_or_init_py_attached(py, || {
+      PyTuple::new(py, iter::empty::<Py<PyAny>>())
+        .unwrap()
+        .unbind()
+    })
+    .as_ptr()
+}
+
+mod drop_guard {
+  use core::mem::ManuallyDrop;
+
+  pub(crate) struct DropGuard<F: FnOnce()>(ManuallyDrop<F>);
+
+  impl<F: FnOnce()> DropGuard<F> {
+    pub fn new(f: F) -> Self {
+      Self(ManuallyDrop::new(f))
+    }
   }
-  if let Some(exc) = exc {
-    exc.restore(py);
+
+  impl<F: FnOnce()> Drop for DropGuard<F> {
+    fn drop(&mut self) {
+      // SAFETY: value is initialized in constructor
+      let f = unsafe { ManuallyDrop::take(&mut self.0) };
+      f();
+    }
   }
-  r
 }

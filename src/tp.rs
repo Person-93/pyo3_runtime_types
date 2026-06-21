@@ -7,14 +7,16 @@ use std::ptr::{self, NonNull};
 use pyo3::exceptions::{PySystemError, PyTypeError};
 use pyo3::ffi::{
   Py_CLEAR, PyObject, PyObject_CallFinalizerFromDealloc, PyObject_GC_UnTrack,
-  PyType_GenericNew, PyTypeObject, visitproc,
+  PyObject_GetTypeData, PyType_GenericNew, PyTypeObject, ternaryfunc,
+  visitproc,
 };
 use pyo3::prelude::*;
+use pyo3::py_format;
 use pyo3::types::{PyDict, PyString, PyTuple, PyType};
 
-use crate::data_ptr::{drop_type_data, set_type_data, type_data};
-use crate::no_exceptions;
+use crate::data_ptr::{drop_type_data, type_data, type_data_ptr};
 use crate::typeobject::RuntimeTypeObject;
+use crate::{no_exceptions, rust_ty_call_token};
 
 /// # Safety
 /// Must be called in `tp_new` slot of type created with [`RuntimeTypeObject`] as type data
@@ -42,38 +44,36 @@ pub(crate) unsafe extern "C" fn new<T: Send + Sync + 'static>(
     },
   };
 
-  let Some(new_fn) = rtt.new_fn::<T>() else {
+  // SAFETY: at callsite, `type_data` is a valid pointer to unintiailized
+  //         memory of the correct type
+  let Some(new_fn) = (unsafe { rtt.new_fn() }) else {
     PyTypeError::new_err(format!(
-      "could not get __new__ fn for <{}>: {}",
+      "could not get __new__ fn for <{}>",
       ty.name().unwrap_or_else(|_| PyString::new(py, "<unknown>")),
-      core::any::type_name::<T>()
     ))
     .restore(py);
     return ptr::null_mut();
   };
 
-  match new_fn(ty.clone(), args.clone(), kwargs.clone()) {
-    Ok(val) => {
-      // SAFETY: forwarding args from python and writing to a properly aligned pointer
-      unsafe {
-        let Some(obj) = NonNull::new(PyType_GenericNew(
-          ty.as_type_ptr(),
-          args.as_ptr(),
-          kwargs.map(|d| d.as_ptr()).unwrap_or_default(),
-        )) else {
-          return ptr::null_mut();
-        };
-        let obj = Borrowed::from_ptr(py, obj.as_ptr());
+  // SAFETY: forwarding args from python and writing to a properly aligned pointer
+  let obj = unsafe {
+    let Some(obj) = NonNull::new(PyType_GenericNew(
+      ty.as_type_ptr(),
+      args.as_ptr(),
+      kwargs.as_ref().map(Bound::as_ptr).unwrap_or_default(),
+    )) else {
+      return ptr::null_mut();
+    };
+    Borrowed::from_ptr(py, obj.as_ptr())
+  };
 
-        if !set_type_data(obj, val) {
-          // NOTE: the python object is leaked, freeing it would run the rust
-          //       type's Drop on uninitialized memory
-          return ptr::null_mut();
-        }
+  let Some(type_data) = type_data_ptr::<T>(obj) else {
+    return ptr::null_mut();
+  };
 
-        obj.as_ptr()
-      }
-    },
+  match new_fn(type_data.cast(), ty.clone(), args, kwargs) {
+    Ok(()) => obj.as_ptr(),
+
     Err(err) => {
       err.restore(py);
       ptr::null_mut()
@@ -130,7 +130,7 @@ pub(crate) unsafe extern "C" fn init<T: Send + Sync + 'static>(
   }
 }
 
-pub(crate) unsafe extern "C" fn call<T: Send + Sync + 'static>(
+pub(crate) unsafe extern "C" fn call(
   slf: *mut PyObject,
   args: *mut PyObject,
   kwargs: *mut PyObject,
@@ -148,27 +148,116 @@ pub(crate) unsafe extern "C" fn call<T: Send + Sync + 'static>(
     Bound::from_borrowed_ptr_or_opt(py, kwargs).map(|b| b.cast_into_unchecked())
   };
 
-  fn inner<'py, T: Send + Sync + 'static>(
+  fn inner<'py>(
     slf: Borrowed<'_, 'py, PyAny>,
     ty: Borrowed<'_, 'py, PyType>,
     args: Bound<'py, PyTuple>,
     kwargs: Option<Bound<'py, PyDict>>,
   ) -> PyResult<Bound<'py, PyAny>> {
     let rtt: &RuntimeTypeObject = ty.extract()?;
-    let call_fn = rtt.call_fn::<T>().ok_or_else(|| {
+    // SAFETY: at callsite `p` is a valid pointer of the correct type
+    let call_fn = unsafe { rtt.call_fn() }.ok_or_else(|| {
       PySystemError::new_err(format!(
-        "could not get __call__ fn for <{}>: {}",
+        "could not get __call__ fn for <{}>",
         ty.qualname()
           .unwrap_or_else(|_| PyString::new(ty.py(), "<unknown>")),
-        core::any::type_name::<T>()
       ))
     })?;
     // SAFETY: python will only call this function after `tp_new` runs
-    let t = unsafe { type_data(slf.as_borrowed()) }?;
-    call_fn(t, ty.to_owned(), args, kwargs)
+    let Some(p) = NonNull::new(unsafe {
+      #[expect(
+        clippy::disallowed_methods,
+        reason = "type of data is not known"
+      )]
+      PyObject_GetTypeData(slf.as_ptr(), ty.as_type_ptr())
+    }) else {
+      todo!()
+    };
+    call_fn(p.cast(), ty.to_owned(), args, kwargs)
   }
 
-  match inner::<T>(slf.as_borrowed(), ty.as_borrowed(), args, kwargs) {
+  match inner(slf.as_borrowed(), ty.as_borrowed(), args, kwargs) {
+    Ok(obj) => obj.into_ptr(),
+    Err(err) => {
+      err.restore(py);
+      ptr::null_mut()
+    },
+  }
+}
+
+pub(crate) unsafe extern "C" fn call_as_ty(
+  slf: *mut PyObject,
+  args: *mut PyObject,
+  kwargs: *mut PyObject,
+) -> *mut PyObject {
+  // SAFETY: only called from python
+  let py = unsafe { Python::assume_attached() };
+  // SAFETY: python doesn't give null self
+  let slf = unsafe { Borrowed::from_ptr(py, slf) };
+  let ty = slf.get_type();
+
+  let base_call = {
+    // find first base with different tp_call
+    let mut tp_call: ternaryfunc = call_as_ty;
+    let mut tp_base: *mut PyTypeObject = ty.as_type_ptr();
+    #[expect(
+      unpredictable_function_pointer_comparisons,
+      reason = "warning only applies to closures"
+    )]
+    while tp_call == call_as_ty {
+      // SAFETY: reading type given by interpreter
+      unsafe {
+        tp_base = ptr::addr_of!((*tp_base).tp_base).read();
+        tp_call = ptr::addr_of!((*tp_base).tp_call).read().unwrap();
+      }
+    }
+    tp_call
+  };
+
+  // the private token was used so the rust part of this object will be filled in later
+  if args == rust_ty_call_token(py) {
+    // SAFETY: forwarding args to base
+    return unsafe { base_call(slf.as_ptr(), args, kwargs) };
+  }
+
+  let rtt: &RuntimeTypeObject = match ty.extract() {
+    Ok(rtt) => rtt,
+    Err(err) => {
+      err.restore(py);
+      return ptr::null_mut();
+    },
+  };
+
+  // SAFETY: at callsite `p` is a valid pointer of the correct type
+  let Some(call_fn) = (unsafe { rtt.call_fn() }) else {
+    PyTypeError::new_err(
+      py_format!(
+        py,
+        "{} can only be constructed from native code",
+        ty.qualname().unwrap()
+      )
+      .unwrap()
+      .unbind(),
+    )
+    .restore(py);
+    return ptr::null_mut();
+  };
+
+  // SAFETY: python always gives args as non-null PyTuple
+  let args: Bound<'_, PyTuple> =
+    unsafe { Bound::from_borrowed_ptr(py, args).cast_into_unchecked() };
+  // SAFETY: python gives kwargs as PyDict and we check for null
+  let kwargs: Option<Bound<'_, PyDict>> = unsafe {
+    Bound::from_borrowed_ptr_or_opt(py, kwargs).map(|b| b.cast_into_unchecked())
+  };
+  // SAFETY: python will only call this function after `tp_new` runs
+  let Some(p) = NonNull::new(unsafe {
+    #[expect(clippy::disallowed_methods, reason = "type of data is not known")]
+    PyObject_GetTypeData(slf.as_ptr(), ty.as_type_ptr())
+  }) else {
+    return ptr::null_mut();
+  };
+  match call_fn(p.cast(), ty.clone(), args, kwargs) {
     Ok(obj) => obj.into_ptr(),
     Err(err) => {
       err.restore(py);

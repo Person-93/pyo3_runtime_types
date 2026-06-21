@@ -49,6 +49,29 @@ fn obj_created_inited_and_destroyed() {
 }
 
 #[test]
+fn no_meta_constructor_exception() {
+  py_wrapper(|py, module| {
+    let meta =
+      Metaclass::<Meta>::new("MetaNoConstructor", module, true).unwrap();
+    meta.as_type_obj_borrowed(py).call0().unwrap_err();
+  });
+}
+
+#[test]
+#[ignore = "the contructor for the builder that allows this is marked unsafe"]
+fn no_constructor_exception() {
+  py_wrapper(|py, module| {
+    let ty = unsafe {
+      PyTypeBuilder::<S>::new_without_new_fn_unsafe("NoConstructor", module)
+    }
+    .unwrap()
+    .build(py)
+    .unwrap();
+    ty.call0().unwrap_err();
+  });
+}
+
+#[test]
 fn build_metaclass_exception() {
   py_wrapper(|py, module| {
     let mut builder =
@@ -134,12 +157,9 @@ fn types_are_gc_collected() {
 
     // destroy the metatype
     {
-      eprintln!(
-        "deleting meta refcnt={}",
-        unsafe { meta.as_type_obj(py) }.get_refcnt()
-      );
+      eprintln!("deleting meta refcnt={}", meta.as_type_obj(py).get_refcnt());
       let meta_gc_check = {
-        let ty = unsafe { meta.as_type_obj_borrowed(py) };
+        let ty = meta.as_type_obj_borrowed(py);
         WeakrefDropCheck::new(ty.as_any())
       };
       drop(meta);

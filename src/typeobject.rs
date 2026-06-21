@@ -23,7 +23,9 @@ use pyo3::types::PyType;
 use crate::data_ptr::{type_data, type_data_ptr};
 use crate::type_erased::ErasedTraitObjects;
 use crate::typespec::TypeSpec;
-use crate::{CallFn, InitFn, MetaclassWithData, NewFn};
+use crate::{
+  CallFn, InitFn, InternalCallFn, InternalNewFn, MetaclassWithData, NewFn, tp,
+};
 
 pub(crate) struct RuntimeTypeObject {
   new_fn: ErasedTraitObjects<1>,
@@ -70,6 +72,20 @@ impl RuntimeTypeObject {
     init_fn: Option<Box<InitFn<T>>>,
     call_fn: Option<Box<CallFn<T>>>,
   ) -> Self {
+    let new_fn = new_fn.map(|new_fn| -> Box<InternalNewFn> {
+      Box::new(move |p, ty, args, kwargs| {
+        let t = new_fn(ty, args, kwargs)?;
+        // SAFETY: `ErasedTraitObjects` ensures that the caller will uphold requirements
+        unsafe { p.cast().write(t) };
+        Ok(())
+      })
+    });
+    let call_fn = call_fn.map(|call_fn| -> Box<InternalCallFn> {
+      Box::new(move |p, ty, args, kwargs| {
+        // SAFETY: `ErasedTraitObjects` ensures that the caller will uphold requirements
+        call_fn(unsafe { p.cast().as_ref() }, ty, args, kwargs)
+      })
+    });
     Self {
       new_fn: ErasedTraitObjects::new([new_fn]),
       init_fn: ErasedTraitObjects::new([init_fn]),
@@ -132,7 +148,11 @@ impl RuntimeTypeObject {
     }
   }
 
-  pub(crate) fn new_fn<T: Send + Sync + 'static>(&self) -> Option<&NewFn<T>> {
+  /// # Safety
+  /// The returned function can only be called if its first argument is a valid
+  /// pointer to unintilized memory of the rust type associated with this
+  /// python type.
+  pub(crate) unsafe fn new_fn(&self) -> Option<&InternalNewFn> {
     self.new_fn.typed().unwrap().get(0)
   }
 
@@ -140,7 +160,10 @@ impl RuntimeTypeObject {
     self.init_fn.typed().unwrap().get(0)
   }
 
-  pub(crate) fn call_fn<T: Send + Sync + 'static>(&self) -> Option<&CallFn<T>> {
+  /// # Safety
+  /// The returned function can only be called if its first argument points to
+  /// a valid object of the rust type associated with this python type.
+  pub(crate) unsafe fn call_fn(&self) -> Option<&InternalCallFn> {
     self.call_fn.typed().unwrap().get(0)
   }
 
@@ -234,6 +257,7 @@ static mut RUNTIME_TYPE_TYPE: PyTypeObject = PyTypeObject {
   tp_flags: runtime_type_flags() as _,
   #[cfg(Py_GIL_DISABLED)]
   tp_flags: std::sync::atomic::AtomicU64::new(runtime_type_flags()),
+  tp_call: Some(tp::call_as_ty),
   ..empty_type_obj()
 };
 
