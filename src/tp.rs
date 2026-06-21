@@ -333,7 +333,8 @@ pub(crate) unsafe extern "C" fn dealloc<T: Send + Sync + 'static>(
         "deallocating a {}: {}, refcnt={}, base={}, metatype={}",
         ty.qualname().unwrap(),
         type_name::<T>(),
-        obj.get_refcnt(),
+        // SAFETY: obj.as_ptr returns valid pointer to python object
+        unsafe { pyo3::ffi::Py_REFCNT(obj.as_ptr()) },
         ty.bases()
           .get_item(0)
           .unwrap()

@@ -346,5 +346,9 @@ const fn empty_type_obj() -> PyTypeObject {
     tp_prev: ptr::null_mut(),
     #[cfg(py_sys_config = "COUNT_ALLOCS")]
     tp_next: ptr::null_mut(),
+    #[cfg(Py_3_13)]
+    tp_versions_used: 0,
+    #[cfg(Py_3_15)]
+    _tp_iteritem: None,
   }
 }

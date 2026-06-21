@@ -109,9 +109,9 @@ fn obj_from_metaclass_created_inited_and_destroyed() {
 #[ignore = "need to figure out why the gc thinks the types aren't trash"]
 fn types_are_gc_collected() {
   py_wrapper(|py, module| {
-    eprintln!("module refcnt at start: {}", module.get_refcnt());
+    eprintln!("module refcnt at start: {}", module.refcount());
     let meta = Metaclass::new("Meta", module.clone(), false).unwrap();
-    eprintln!("created meta: {}", module.get_refcnt());
+    eprintln!("created meta: {}", module.refcount());
 
     let meta_factory = MetaFactory::default();
     let factory = Arc::new(Factory::default());
@@ -121,29 +121,29 @@ fn types_are_gc_collected() {
         Box::new(move |_, _, _| Ok(factory.make()))
       })
       .unwrap();
-    eprintln!("created builder (with clone): {}", module.get_refcnt());
+    eprintln!("created builder (with clone): {}", module.refcount());
     builder.hide_from_module(true);
 
     builder.init_fn(Box::new(|slf, _, _, _| slf.__init__()));
     let ty = builder.build(py).unwrap();
-    eprintln!("created type: {}", module.get_refcnt());
+    eprintln!("created type: {}", module.refcount());
     let obj = ty.call0().unwrap();
-    eprintln!("created object: {}", module.get_refcnt());
+    eprintln!("created object: {}", module.refcount());
     eprintln!();
 
     // destroy the object
     {
-      eprintln!("deleting obj refcnt={}", obj.get_refcnt());
+      eprintln!("deleting obj refcnt={}", obj.refcount());
       drop(obj);
       gc_collect_force(py);
       factory.assert_inited_and_finalized();
-      eprintln!("module refcnt={}", module.get_refcnt());
+      eprintln!("module refcnt={}", module.refcount());
       eprintln!();
     }
 
     // destroy the type
     {
-      eprintln!("deleting ty refcnt={}", ty.get_refcnt());
+      eprintln!("deleting ty refcnt={}", ty.refcount());
       let ty_gc_check = WeakrefDropCheck::new(&ty);
       assert!(unsafe { PyObject_GC_IsTracked(ty.as_ptr()) != 0 });
       drop(ty);
@@ -151,13 +151,13 @@ fn types_are_gc_collected() {
       // NOTE: if the rust drop ran but it wasn't GCed, that's a soundness issue
       ty_gc_check.assert_garbage_collected();
       meta_factory.assert_dropped();
-      eprintln!("module refcnt={}", module.get_refcnt());
+      eprintln!("module refcnt={}", module.refcount());
       eprintln!();
     }
 
     // destroy the metatype
     {
-      eprintln!("deleting meta refcnt={}", meta.as_type_obj(py).get_refcnt());
+      eprintln!("deleting meta refcnt={}", meta.as_type_obj(py).refcount());
       let meta_gc_check = {
         let ty = meta.as_type_obj_borrowed(py);
         WeakrefDropCheck::new(ty.as_any())
@@ -342,5 +342,15 @@ impl<'py> WeakrefDropCheck<'py> {
   fn assert_garbage_collected(self) {
     let obj_was_gc_collected = self.flag.load(Ordering::SeqCst);
     assert!(obj_was_gc_collected);
+  }
+}
+
+trait BoundExt {
+  fn refcount(&self) -> isize;
+}
+
+impl<T> BoundExt for Bound<'_, T> {
+  fn refcount(&self) -> isize {
+    unsafe { pyo3::ffi::Py_REFCNT(self.as_ptr()) }
   }
 }
