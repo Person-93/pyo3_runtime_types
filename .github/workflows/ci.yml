@@ -24,6 +24,9 @@ jobs:
     name: CI
     needs: [smoke, test, docs, rustfmt, clippy]
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
     steps:
       - name: Done
         run: exit 0
